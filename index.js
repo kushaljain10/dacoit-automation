@@ -1145,9 +1145,70 @@ app.get("/test", (req, res) => {
 app.post("/debug/reset-webhook", async (req, res) => {
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-    res.json({ message: "Webhook deleted successfully" });
+    res.json({
+      message: "Webhook deleted successfully",
+      pending_updates_dropped: true,
+      timestamp: new Date().toISOString(),
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Manual webhook setup endpoint
+app.post("/debug/setup-webhook", async (req, res) => {
+  try {
+    const webhookUrl =
+      req.body.url ||
+      process.env.WEBHOOK_URL ||
+      `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`;
+
+    await bot.telegram.setWebhook(webhookUrl, {
+      max_connections: 40,
+      drop_pending_updates: true,
+    });
+
+    const webhookInfo = await bot.telegram.getWebhookInfo();
+    res.json({
+      message: "Webhook set successfully",
+      url: webhookUrl,
+      webhook_info: webhookInfo,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Set up webhook endpoint for ALL environments (before server starts)
+app.get("/webhook", (req, res) => {
+  res.json({
+    message: "Webhook endpoint is active",
+    method: "GET",
+    timestamp: new Date().toISOString(),
+    note: "Telegram should POST to this endpoint",
+  });
+});
+
+app.post("/webhook", async (req, res, next) => {
+  console.log("📨 Webhook POST received:", {
+    method: req.method,
+    url: req.url,
+    headers: {
+      "content-type": req.headers["content-type"],
+      "content-length": req.headers["content-length"],
+      "user-agent": req.headers["user-agent"],
+    },
+    body: req.body,
+  });
+
+  try {
+    return bot.webhookCallback("/webhook")(req, res, next);
+  } catch (error) {
+    console.error("❌ Webhook processing error:", error);
+    res
+      .status(500)
+      .json({ error: "Webhook processing failed", message: error.message });
   }
 });
 
@@ -1162,27 +1223,6 @@ app.listen(PORT, () => {
 // For Railway deployment - use webhooks instead of polling
 if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT) {
   console.log("🚂 Railway environment detected, configuring webhooks...");
-
-  // Set up webhook endpoint BEFORE trying to configure Telegram webhook
-  app.use("/webhook", async (req, res, next) => {
-    console.log("📨 Webhook request received:", {
-      method: req.method,
-      url: req.url,
-      headers: {
-        "content-type": req.headers["content-type"],
-        "content-length": req.headers["content-length"],
-        "user-agent": req.headers["user-agent"],
-      },
-      body: req.body,
-    });
-
-    try {
-      await bot.webhookCallback("/webhook")(req, res, next);
-    } catch (error) {
-      console.error("❌ Webhook processing error:", error);
-      res.status(500).send("Webhook processing failed");
-    }
-  });
 
   // Construct webhook URL with better fallbacks
   let webhookUrl = process.env.WEBHOOK_URL;
