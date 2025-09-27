@@ -14,13 +14,27 @@ async function resetBot() {
 
     // Get webhook info to verify
     const webhookInfo = await bot.telegram.getWebhookInfo();
-    console.log("📊 Current webhook info:", webhookInfo);
+    console.log("📊 Current webhook info:", {
+      url: webhookInfo.url,
+      has_custom_certificate: webhookInfo.has_custom_certificate,
+      pending_update_count: webhookInfo.pending_update_count,
+      max_connections: webhookInfo.max_connections,
+    });
 
     // Get bot info
     const botInfo = await bot.telegram.getMe();
-    console.log("🤖 Bot info:", botInfo.username);
+    console.log("🤖 Bot info:", {
+      id: botInfo.id,
+      username: botInfo.username,
+      first_name: botInfo.first_name,
+    });
 
-    console.log("✨ Bot reset complete! You can now deploy to Railway.");
+    console.log("\n✅ Bot reset complete!");
+    console.log("💡 Your bot is now ready for webhook setup on Railway.");
+    console.log("🔍 To debug Railway deployment, check:");
+    console.log("   - https://your-app.railway.app/health");
+    console.log("   - https://your-app.railway.app/debug/webhook");
+    console.log("   - Railway deployment logs");
     process.exit(0);
   } catch (error) {
     console.error("❌ Error resetting bot:", error.message);
@@ -28,4 +42,44 @@ async function resetBot() {
   }
 }
 
-resetBot();
+// Also provide manual webhook setup
+async function setupWebhook(url) {
+  if (!url) {
+    console.error("❌ Please provide webhook URL as argument");
+    console.error(
+      "Usage: node reset-bot.js setup https://your-domain.com/webhook"
+    );
+    process.exit(1);
+  }
+
+  try {
+    console.log(`🔗 Setting webhook to: ${url}`);
+    await bot.telegram.setWebhook(url, {
+      max_connections: 40,
+      drop_pending_updates: true,
+    });
+
+    const webhookInfo = await bot.telegram.getWebhookInfo();
+    console.log("✅ Webhook set successfully!");
+    console.log("📊 Webhook info:", {
+      url: webhookInfo.url,
+      has_custom_certificate: webhookInfo.has_custom_certificate,
+      pending_update_count: webhookInfo.pending_update_count,
+      max_connections: webhookInfo.max_connections,
+    });
+    process.exit(0);
+  } catch (error) {
+    console.error("❌ Error setting webhook:", error.message);
+    process.exit(1);
+  }
+}
+
+// Check command line arguments
+const command = process.argv[2];
+const arg = process.argv[3];
+
+if (command === "setup" && arg) {
+  setupWebhook(arg);
+} else {
+  resetBot();
+}
