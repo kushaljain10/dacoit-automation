@@ -18,7 +18,7 @@ const {
   WHITELIST,
   OPENROUTER_API_KEY,
   OPENROUTER_API_URL,
-  PORT = 3000,
+  PORT = process.env.PORT || process.env.RAILWAY_PORT || 3000,
 } = process.env;
 
 const whitelist = new Set(
@@ -1042,13 +1042,53 @@ app.get("/oauth/callback", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`OAuth server on :${PORT}`));
+// Health check endpoint
+app.get("/", (req, res) => {
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || "development",
+  });
+});
+
+// Health check for webhook
+app.get("/webhook", (req, res) => {
+  res.json({
+    status: "webhook endpoint active",
+    method: "GET requests not supported, use POST",
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`OAuth server on :${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+  console.log(`Server started at: ${new Date().toISOString()}`);
+});
 
 // For Railway deployment - use webhooks instead of polling
 if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT) {
   // Use webhooks for production (Railway)
 
-  // Set up the webhook endpoint first
+  // Add body parser for webhooks with error handling
+  app.use(express.json({ limit: "50mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+
+  // Add webhook debugging
+  app.use("/webhook", (req, res, next) => {
+    console.log("📨 Webhook received:", {
+      method: req.method,
+      url: req.url,
+      headers: {
+        "content-type": req.headers["content-type"],
+        "user-agent": req.headers["user-agent"],
+      },
+      body: req.body,
+    });
+    next();
+  });
+
+  // Set up the webhook endpoint
   app.use(bot.webhookCallback("/webhook"));
 
   // Determine webhook URL with proper fallbacks
