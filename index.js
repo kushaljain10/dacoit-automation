@@ -6,6 +6,7 @@ const dayjs = require("dayjs");
 const customParseFormat = require("dayjs/plugin/customParseFormat");
 const fs = require("fs");
 const path = require("path");
+const Database = require("better-sqlite3");
 require("dotenv").config();
 dayjs.extend(customParseFormat);
 
@@ -18,7 +19,7 @@ const {
   WHITELIST,
   OPENROUTER_API_KEY,
   OPENROUTER_API_URL,
-  PORT = process.env.PORT || process.env.RAILWAY_PORT || 3000,
+  PORT = 3000,
 } = process.env;
 
 const whitelist = new Set(
@@ -40,138 +41,129 @@ bot.catch((err, ctx) => {
   console.error("Bot error for update", ctx.update, err);
 });
 
-// Production-safe authentication storage
-class AuthStore {
+// SQLite-based authentication store for production safety
+class SQLiteAuthStore {
   constructor() {
-    this.inMemoryStore = new Map();
-    this.isProduction =
-      process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT;
-
-    // Load existing data on startup
-    this.loadInitialData();
+    this.dbFile = path.join(__dirname, "auth.db");
+    this.db = null;
+    this.initialize();
   }
 
-  loadInitialData() {
-    if (this.isProduction) {
-      // In production, try to load from environment variables (for single user)
-      const savedAuth = process.env.BASECAMP_SAVED_AUTH;
-      if (savedAuth) {
-        try {
-          const parsed = JSON.parse(savedAuth);
-          this.inMemoryStore.set(parsed.userId, {
-            access: parsed.access,
-            refresh: parsed.refresh,
-            accountId: parsed.accountId,
-          });
-          console.log("Loaded authentication from environment variables");
-        } catch (error) {
-          console.error("Error parsing saved auth from environment:", error);
-        }
-      }
-    } else {
-      // In development, still use file-based storage
-      try {
-        const STORE_FILE = path.join(__dirname, "auth_store.json");
-        if (fs.existsSync(STORE_FILE)) {
-          const data = fs.readFileSync(STORE_FILE, "utf8");
-          const parsed = JSON.parse(data);
-          this.inMemoryStore = new Map(Object.entries(parsed));
-          console.log(
-            `Loaded ${this.inMemoryStore.size} authentication(s) from local storage`
-          );
-        }
-      } catch (error) {
-        console.error("Error loading local store:", error);
-      }
+  initialize() {
+    try {
+      this.db = new Database(this.dbFile);
+
+      // Create table if it doesn't exist
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS user_auth (
+          user_id TEXT PRIMARY KEY,
+          access_token TEXT NOT NULL,
+          refresh_token TEXT,
+          account_id INTEGER NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      // Create index for faster lookups
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_user_auth_user_id
+        ON user_auth(user_id)
+      `);
+
+      console.log("SQLite auth store initialized");
+    } catch (error) {
+      console.error("Error initializing SQLite store:", error.message);
+      throw error;
     }
   }
 
   get(userId) {
-    return this.inMemoryStore.get(userId);
+    if (!this.db) return null;
+
+    try {
+      const stmt = this.db.prepare("SELECT * FROM user_auth WHERE user_id = ?");
+      const result = stmt.get(userId);
+
+      if (result) {
+        return {
+          access: result.access_token,
+          refresh: result.refresh_token,
+          accountId: result.account_id,
+        };
+      }
+      return null;
+    } catch (error) {
+      console.error("Error getting auth data:", error.message);
+      return null;
+    }
   }
 
   set(userId, authData) {
-    this.inMemoryStore.set(userId, authData);
+    if (!this.db) return;
 
-    if (this.isProduction) {
-      // In production, save to environment variable (single user) or database
-      this.saveToProduction(userId, authData);
-    } else {
-      // In development, save to file
-      this.saveToFile();
-    }
-  }
-
-  saveToProduction(userId, authData) {
-    // For Railway, we'll log the auth data so it can be set as an env var
-    // This is for single-user scenarios. For multi-user, you'd use a database.
-    const authString = JSON.stringify({
-      userId,
-      access: authData.access,
-      refresh: authData.refresh,
-      accountId: authData.accountId,
-    });
-
-    console.log(
-      "🔐 IMPORTANT: Save this authentication data as BASECAMP_SAVED_AUTH environment variable:"
-    );
-    console.log("BASECAMP_SAVED_AUTH=" + authString);
-    console.log(
-      "Add this to your Railway environment variables to persist authentication."
-    );
-  }
-
-  saveToFile() {
     try {
-      const STORE_FILE = path.join(__dirname, "auth_store.json");
-      const data = JSON.stringify(
-        Object.fromEntries(this.inMemoryStore),
-        null,
-        2
-      );
-      fs.writeFileSync(STORE_FILE, data, "utf8");
+      const stmt = this.db.prepare(`
+        INSERT OR REPLACE INTO user_auth (user_id, access_token, refresh_token, account_id, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `);
+
+      stmt.run(userId, authData.access, authData.refresh, authData.accountId);
+
+      console.log(`Authentication data saved for user: ${userId}`);
     } catch (error) {
-      console.error("Error saving local store:", error);
+      console.error("Error saving auth data:", error.message);
     }
   }
 
-  // For database storage (optional future enhancement)
-  async saveToDatabase(userId, authData) {
-    // This would connect to your preferred database (PostgreSQL, MongoDB, etc.)
-    // Example with PostgreSQL:
-    /*
+  delete(userId) {
+    if (!this.db) return;
+
     try {
-      await db.query(
-        'INSERT INTO user_auth (user_id, access_token, refresh_token, account_id) VALUES ($1, $2, $3, $4) ON CONFLICT (user_id) DO UPDATE SET access_token = $2, refresh_token = $3, account_id = $4',
-        [userId, authData.access, authData.refresh, authData.accountId]
-      );
+      const stmt = this.db.prepare("DELETE FROM user_auth WHERE user_id = ?");
+      stmt.run(userId);
+      console.log(`Authentication data deleted for user: ${userId}`);
     } catch (error) {
-      console.error('Database save error:', error);
+      console.error("Error deleting auth data:", error.message);
     }
-    */
   }
 
-  async loadFromDatabase() {
-    // This would load all auth data from database on startup
-    /*
+  getAllUsers() {
+    if (!this.db) return [];
+
     try {
-      const result = await db.query('SELECT * FROM user_auth');
-      for (const row of result.rows) {
-        this.inMemoryStore.set(row.user_id, {
-          access: row.access_token,
-          refresh: row.refresh_token,
-          accountId: row.account_id
-        });
-      }
+      const stmt = this.db.prepare("SELECT user_id FROM user_auth");
+      return stmt.all().map((row) => row.user_id);
     } catch (error) {
-      console.error('Database load error:', error);
+      console.error("Error getting all users:", error.message);
+      return [];
     }
-    */
+  }
+
+  size() {
+    if (!this.db) return 0;
+
+    try {
+      const stmt = this.db.prepare("SELECT COUNT(*) as count FROM user_auth");
+      const result = stmt.get();
+      return result.count;
+    } catch (error) {
+      console.error("Error getting size:", error.message);
+      return 0;
+    }
+  }
+
+  close() {
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+    }
   }
 }
 
-// Initialize production-safe store
-const store = new AuthStore();
+// Initialize SQLite store
+const store = new SQLiteAuthStore();
+console.log(`Loaded ${store.size()} authentication(s) from persistent storage`);
 
 /** ------------ Helpers ------------ **/
 const bc = (access) => ({
@@ -1035,6 +1027,7 @@ app.get("/oauth/callback", async (req, res) => {
       refresh: token.refresh_token,
       accountId,
     });
+    saveStore(store); // Persist the authentication data
     res.send("Connected. You can return to Telegram.");
   } catch (e) {
     console.error(e?.response?.data || e.message);
@@ -1042,96 +1035,49 @@ app.get("/oauth/callback", async (req, res) => {
   }
 });
 
-// Health check endpoint
-app.get("/", (req, res) => {
-  res.json({
-    status: "ok",
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    environment: process.env.NODE_ENV || "development",
-  });
-});
+// Graceful shutdown handling
+const gracefulShutdown = () => {
+  console.log("🛑 Received shutdown signal, closing database connection...");
 
-// Health check for webhook
-app.get("/webhook", (req, res) => {
-  res.json({
-    status: "webhook endpoint active",
-    method: "GET requests not supported, use POST",
-  });
-});
+  try {
+    store.close();
+    console.log("✅ Database connection closed");
+  } catch (error) {
+    console.error("❌ Error closing database:", error.message);
+  }
 
-app.listen(PORT, () => {
-  console.log(`OAuth server on :${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
-  console.log(`Server started at: ${new Date().toISOString()}`);
-});
+  process.exit(0);
+};
+
+// Handle shutdown signals
+process.on("SIGINT", gracefulShutdown);
+process.on("SIGTERM", gracefulShutdown);
+process.on("SIGUSR2", gracefulShutdown); // nodemon restart
+
+app.listen(PORT, () => console.log(`OAuth server on :${PORT}`));
 
 // For Railway deployment - use webhooks instead of polling
 if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT) {
   // Use webhooks for production (Railway)
+  const webhookUrl =
+    process.env.WEBHOOK_URL ||
+    `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`;
 
-  // Add body parser for webhooks with error handling
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ extended: true, limit: "50mb" }));
-
-  // Add webhook debugging
-  app.use("/webhook", (req, res, next) => {
-    console.log("📨 Webhook received:", {
-      method: req.method,
-      url: req.url,
-      headers: {
-        "content-type": req.headers["content-type"],
-        "user-agent": req.headers["user-agent"],
-      },
-      body: req.body,
-    });
-    next();
-  });
-
-  // Set up the webhook endpoint
   app.use(bot.webhookCallback("/webhook"));
 
-  // Determine webhook URL with proper fallbacks
-  let webhookUrl = process.env.WEBHOOK_URL;
-
-  if (!webhookUrl) {
-    // Try Railway's public domain
-    if (process.env.RAILWAY_PUBLIC_DOMAIN) {
-      webhookUrl = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`;
-    } else {
-      console.error(
-        "❌ No webhook URL configured! Set WEBHOOK_URL or RAILWAY_PUBLIC_DOMAIN"
-      );
-      process.exit(1);
-    }
-  }
-
-  // Validate webhook URL
-  if (!webhookUrl.startsWith("https://")) {
-    console.error("❌ Webhook URL must use HTTPS in production:", webhookUrl);
-    process.exit(1);
-  }
-
-  console.log("🔗 Setting up webhook:", webhookUrl);
-
-  // Set the webhook
   bot.telegram
     .setWebhook(webhookUrl)
     .then(() => {
-      console.log("✅ Webhook set successfully:", webhookUrl);
-      console.log("🤖 Telegram bot configured for webhook mode");
+      console.log(`Webhook set to: ${webhookUrl}`);
     })
     .catch((err) => {
-      console.error("❌ Failed to set webhook:", err);
-      console.error("Check your WEBHOOK_URL and bot token");
+      console.error("Failed to set webhook:", err);
     });
+
+  console.log("Telegram bot configured for webhook mode");
 } else {
   // Use polling for local development
-  console.log("🔄 Starting bot in polling mode for development");
   bot
     .launch()
-    .then(() => console.log("✅ Telegram bot launched in polling mode"))
-    .catch((err) => {
-      console.error("❌ Failed to launch bot:", err);
-    });
+    .then(() => console.log("Telegram bot launched in polling mode."));
 }

@@ -10,6 +10,7 @@ node_modules/
 
 # Authentication store (contains sensitive tokens)
 auth_store.json
+auth.db
 
 # Logs
 *.log
