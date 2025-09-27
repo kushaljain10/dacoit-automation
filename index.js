@@ -1047,25 +1047,51 @@ app.listen(PORT, () => console.log(`OAuth server on :${PORT}`));
 // For Railway deployment - use webhooks instead of polling
 if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT) {
   // Use webhooks for production (Railway)
-  const webhookUrl =
-    process.env.WEBHOOK_URL ||
-    `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`;
 
+  // Set up the webhook endpoint first
   app.use(bot.webhookCallback("/webhook"));
 
+  // Determine webhook URL with proper fallbacks
+  let webhookUrl = process.env.WEBHOOK_URL;
+
+  if (!webhookUrl) {
+    // Try Railway's public domain
+    if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+      webhookUrl = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`;
+    } else {
+      console.error(
+        "❌ No webhook URL configured! Set WEBHOOK_URL or RAILWAY_PUBLIC_DOMAIN"
+      );
+      process.exit(1);
+    }
+  }
+
+  // Validate webhook URL
+  if (!webhookUrl.startsWith("https://")) {
+    console.error("❌ Webhook URL must use HTTPS in production:", webhookUrl);
+    process.exit(1);
+  }
+
+  console.log("🔗 Setting up webhook:", webhookUrl);
+
+  // Set the webhook
   bot.telegram
     .setWebhook(webhookUrl)
     .then(() => {
-      console.log(`Webhook set to: ${webhookUrl}`);
+      console.log("✅ Webhook set successfully:", webhookUrl);
+      console.log("🤖 Telegram bot configured for webhook mode");
     })
     .catch((err) => {
-      console.error("Failed to set webhook:", err);
+      console.error("❌ Failed to set webhook:", err);
+      console.error("Check your WEBHOOK_URL and bot token");
     });
-
-  console.log("Telegram bot configured for webhook mode");
 } else {
   // Use polling for local development
+  console.log("🔄 Starting bot in polling mode for development");
   bot
     .launch()
-    .then(() => console.log("Telegram bot launched in polling mode."));
+    .then(() => console.log("✅ Telegram bot launched in polling mode"))
+    .catch((err) => {
+      console.error("❌ Failed to launch bot:", err);
+    });
 }
