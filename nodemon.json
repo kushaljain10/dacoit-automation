@@ -1,0 +1,11 @@
+{
+  "watch": ["index.js", ".env"],
+  "ext": "js,json,env",
+  "ignore": ["node_modules/", "*.log", "auth_store.json"],
+  "delay": "2000",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "restartable": "rs",
+  "verbose": true
+}
