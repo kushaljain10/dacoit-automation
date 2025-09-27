@@ -19,7 +19,7 @@ const {
   WHITELIST,
   OPENROUTER_API_KEY,
   OPENROUTER_API_URL,
-  PORT = 3000,
+  PORT = process.env.PORT || 3000,
 } = process.env;
 
 const whitelist = new Set(
@@ -1071,6 +1071,16 @@ process.on("SIGINT", gracefulShutdown);
 process.on("SIGTERM", gracefulShutdown);
 process.on("SIGUSR2", gracefulShutdown); // nodemon restart
 
+// Handle uncaught exceptions
+process.on("uncaughtException", (error) => {
+  console.error("💥 Uncaught Exception:", error);
+  gracefulShutdown();
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("💥 Unhandled Rejection at:", promise, "reason:", reason);
+});
+
 // Health check endpoint for Railway
 app.get("/health", (req, res) => {
   res.json({
@@ -1141,45 +1151,19 @@ app.post("/debug/reset-webhook", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`OAuth server on :${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 Server started on port :${PORT}`);
+  console.log(`🌐 Environment: ${process.env.NODE_ENV || "development"}`);
+  console.log(
+    `🚂 Railway: ${!!process.env.RAILWAY_ENVIRONMENT ? "YES" : "NO"}`
+  );
+});
 
 // For Railway deployment - use webhooks instead of polling
 if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT) {
   console.log("🚂 Railway environment detected, configuring webhooks...");
 
-  // Construct webhook URL with better fallbacks
-  let webhookUrl = process.env.WEBHOOK_URL;
-
-  if (!webhookUrl) {
-    const domain =
-      process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_DOMAIN;
-    if (domain) {
-      webhookUrl = `https://${domain}/webhook`;
-    } else {
-      console.error("❌ No webhook URL configured!");
-      console.error("Please set one of these environment variables:");
-      console.error("  - WEBHOOK_URL (full URL)");
-      console.error("  - RAILWAY_PUBLIC_DOMAIN (domain only)");
-      console.error("  - RAILWAY_DOMAIN (domain only)");
-      process.exit(1);
-    }
-  }
-
-  console.log(`🔗 Webhook URL: ${webhookUrl}`);
-
-  // Validate webhook URL format
-  try {
-    const url = new URL(webhookUrl);
-    if (!url.protocol.startsWith("https")) {
-      console.error("❌ Webhook URL must use HTTPS in production");
-      process.exit(1);
-    }
-  } catch (error) {
-    console.error("❌ Invalid webhook URL format:", webhookUrl);
-    process.exit(1);
-  }
-
-  // Set up webhook endpoint with error handling and logging
+  // Set up webhook endpoint BEFORE trying to configure Telegram webhook
   app.use("/webhook", async (req, res, next) => {
     console.log("📨 Webhook request received:", {
       method: req.method,
@@ -1200,56 +1184,97 @@ if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT) {
     }
   });
 
-  // Retry webhook setup with exponential backoff
-  const setupWebhook = async (retryCount = 0) => {
-    const maxRetries = 5;
-    const baseDelay = 2000; // 2 seconds
+  // Construct webhook URL with better fallbacks
+  let webhookUrl = process.env.WEBHOOK_URL;
 
-    try {
+  if (!webhookUrl) {
+    const domain =
+      process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_DOMAIN;
+    if (domain) {
+      webhookUrl = `https://${domain}/webhook`;
+    } else {
       console.log(
-        `🔄 Setting webhook (attempt ${retryCount + 1}/${maxRetries + 1})...`
+        "⚠️  No webhook URL configured - webhook setup will be skipped"
       );
-
-      await bot.telegram.setWebhook(webhookUrl, {
-        max_connections: 40,
-        drop_pending_updates: true,
-      });
-
-      console.log(`✅ Webhook successfully set to: ${webhookUrl}`);
-      console.log("🤖 Telegram bot configured for webhook mode");
-
-      // Get webhook info to verify
-      const webhookInfo = await bot.telegram.getWebhookInfo();
-      console.log("📊 Webhook info:", {
-        url: webhookInfo.url,
-        has_custom_certificate: webhookInfo.has_custom_certificate,
-        pending_update_count: webhookInfo.pending_update_count,
-        max_connections: webhookInfo.max_connections,
-      });
-    } catch (error) {
-      console.error(
-        `❌ Failed to set webhook (attempt ${retryCount + 1}):`,
-        error.message
+      console.log(
+        "To enable webhooks, set one of these environment variables:"
       );
-
-      if (retryCount < maxRetries) {
-        const delay = baseDelay * Math.pow(2, retryCount); // Exponential backoff
-        console.log(`⏳ Retrying in ${delay}ms...`);
-        setTimeout(() => setupWebhook(retryCount + 1), delay);
-      } else {
-        console.error("❌ Max retries reached. Webhook setup failed.");
-        console.error("💡 Possible solutions:");
-        console.error("   1. Check if your Railway app is fully deployed");
-        console.error("   2. Verify RAILWAY_PUBLIC_DOMAIN is set correctly");
-        console.error("   3. Check Railway logs for any errors");
-        console.error("   4. Ensure your domain is accessible from Telegram");
-        console.error("   5. Try redeploying your Railway app");
-      }
+      console.log("  - WEBHOOK_URL (full URL)");
+      console.log("  - RAILWAY_PUBLIC_DOMAIN (domain only)");
+      console.log("  - RAILWAY_DOMAIN (domain only)");
     }
-  };
+  }
 
-  // Start webhook setup after a short delay to ensure server is ready
-  setTimeout(setupWebhook, 3000);
+  if (webhookUrl) {
+    console.log(`🔗 Webhook URL: ${webhookUrl}`);
+
+    // Validate webhook URL format
+    try {
+      const url = new URL(webhookUrl);
+      if (!url.protocol.startsWith("https")) {
+        console.error("❌ Webhook URL must use HTTPS in production");
+        webhookUrl = null; // Disable webhook setup
+      }
+    } catch (error) {
+      console.error("❌ Invalid webhook URL format:", webhookUrl);
+      webhookUrl = null; // Disable webhook setup
+    }
+
+    // Retry webhook setup with exponential backoff
+    const setupWebhook = async (retryCount = 0) => {
+      const maxRetries = 3;
+      const baseDelay = 5000; // 5 seconds
+
+      try {
+        console.log(
+          `🔄 Setting webhook (attempt ${retryCount + 1}/${maxRetries + 1})...`
+        );
+
+        await bot.telegram.setWebhook(webhookUrl, {
+          max_connections: 40,
+          drop_pending_updates: true,
+        });
+
+        console.log(`✅ Webhook successfully set to: ${webhookUrl}`);
+        console.log("🤖 Telegram bot configured for webhook mode");
+
+        // Get webhook info to verify
+        const webhookInfo = await bot.telegram.getWebhookInfo();
+        console.log("📊 Webhook info:", {
+          url: webhookInfo.url,
+          has_custom_certificate: webhookInfo.has_custom_certificate,
+          pending_update_count: webhookInfo.pending_update_count,
+          max_connections: webhookInfo.max_connections,
+        });
+      } catch (error) {
+        console.error(
+          `❌ Failed to set webhook (attempt ${retryCount + 1}):`,
+          error.message
+        );
+
+        if (retryCount < maxRetries) {
+          const delay = baseDelay * Math.pow(2, retryCount); // Exponential backoff
+          console.log(`⏳ Retrying in ${delay}ms...`);
+          setTimeout(() => setupWebhook(retryCount + 1), delay);
+        } else {
+          console.error("❌ Max retries reached. Webhook setup failed.");
+          console.error(
+            "💡 Bot will continue running but may not receive updates"
+          );
+          console.error(
+            "Check your environment variables and redeploy if needed"
+          );
+        }
+      }
+    };
+
+    // Start webhook setup after server is fully ready
+    setTimeout(setupWebhook, 10000); // 10 second delay
+  } else {
+    console.log(
+      "🤖 Running in webhook mode without Telegram webhook configured"
+    );
+  }
 } else {
   // Use polling for local development
   console.log("🔄 Starting bot in polling mode for development");
