@@ -745,7 +745,40 @@ bot.start(requireAuth, async (ctx) => {
   await askTaskDescription(ctx);
 });
 
+bot.command("stop", requireAuth, async (ctx) => {
+  console.log("🛑 Stop command received from:", ctx.from);
+  ctx.session ??= {};
+
+  // Clean up any ongoing flow messages
+  await resetFlow(ctx);
+
+  await ctx.reply(
+    "🛑 *Conversation stopped.*\n\n" +
+      "Your current task creation has been cancelled and all data cleared.\n\n" +
+      "Use /start to begin a new task creation process.",
+    { parse_mode: "Markdown" }
+  );
+});
+
+bot.command("help", requireAuth, async (ctx) => {
+  console.log("❓ Help command received from:", ctx.from);
+
+  await ctx.reply(
+    "🤖 *Basecamp Task Bot Commands*\n\n" +
+      "*/start* - Begin creating a new task\n" +
+      "*/stop* - Cancel current conversation and reset\n" +
+      "*/help* - Show this help message\n\n" +
+      "_This bot helps you create tasks in Basecamp using AI-powered processing._",
+    { parse_mode: "Markdown" }
+  );
+});
+
 bot.on("text", requireAuth, async (ctx) => {
+  // Skip processing if this is a command (starts with /)
+  if (ctx.message.text?.startsWith("/")) {
+    return;
+  }
+
   console.log("📨 Text message received:", {
     from: ctx.from,
     text: ctx.message.text,
