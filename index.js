@@ -41,6 +41,16 @@ bot.catch((err, ctx) => {
   console.error("Bot error for update", ctx.update, err);
 });
 
+// Catch-all handler for debugging
+bot.use(async (ctx, next) => {
+  console.log("🔍 Update received:", {
+    update_type: Object.keys(ctx.update)[0],
+    from: ctx.from,
+    chat: ctx.chat,
+  });
+  await next();
+});
+
 // SQLite-based authentication store for production safety
 class SQLiteAuthStore {
   constructor() {
@@ -728,6 +738,7 @@ const createTodo = async (
 
 /** ------------ Telegram bot handlers ------------ **/
 bot.start(requireAuth, async (ctx) => {
+  console.log("🚀 Start command received from:", ctx.from);
   ctx.session ??= {};
   await resetFlow(ctx);
   ctx.session.flow.step = 1;
@@ -735,6 +746,12 @@ bot.start(requireAuth, async (ctx) => {
 });
 
 bot.on("text", requireAuth, async (ctx) => {
+  console.log("📨 Text message received:", {
+    from: ctx.from,
+    text: ctx.message.text,
+    session: ctx.session,
+  });
+
   ctx.session ??= {};
   ctx.session.flow ??= { step: 0, selections: {} };
   let f = ctx.session.flow;
@@ -1085,6 +1102,11 @@ app.get("/debug/webhook", async (req, res) => {
         RAILWAY_DOMAIN: process.env.RAILWAY_DOMAIN,
         WEBHOOK_URL: process.env.WEBHOOK_URL,
       },
+      server_status: {
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        version: process.version,
+      },
     });
   } catch (error) {
     res.status(500).json({
@@ -1094,6 +1116,19 @@ app.get("/debug/webhook", async (req, res) => {
         `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`,
     });
   }
+});
+
+// Test endpoint to verify Railway deployment
+app.get("/test", (req, res) => {
+  res.json({
+    message: "Bot server is running!",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || "development",
+    webhook_configured: !!(
+      process.env.WEBHOOK_URL || process.env.RAILWAY_PUBLIC_DOMAIN
+    ),
+    database_connected: store && store.db !== null,
+  });
 });
 
 // Manual webhook reset endpoint
@@ -1144,8 +1179,26 @@ if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT) {
     process.exit(1);
   }
 
-  // Set up webhook endpoint
-  app.use(bot.webhookCallback("/webhook"));
+  // Set up webhook endpoint with error handling and logging
+  app.use("/webhook", async (req, res, next) => {
+    console.log("📨 Webhook request received:", {
+      method: req.method,
+      url: req.url,
+      headers: {
+        "content-type": req.headers["content-type"],
+        "content-length": req.headers["content-length"],
+        "user-agent": req.headers["user-agent"],
+      },
+      body: req.body,
+    });
+
+    try {
+      await bot.webhookCallback("/webhook")(req, res, next);
+    } catch (error) {
+      console.error("❌ Webhook processing error:", error);
+      res.status(500).send("Webhook processing failed");
+    }
+  });
 
   // Retry webhook setup with exponential backoff
   const setupWebhook = async (retryCount = 0) => {

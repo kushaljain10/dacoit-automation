@@ -32,8 +32,11 @@ async function resetBot() {
     console.log("\n✅ Bot reset complete!");
     console.log("💡 Your bot is now ready for webhook setup on Railway.");
     console.log("🔍 To debug Railway deployment, check:");
-    console.log("   - https://your-app.railway.app/health");
-    console.log("   - https://your-app.railway.app/debug/webhook");
+    console.log("   - https://your-app.railway.app/test (basic connectivity)");
+    console.log("   - https://your-app.railway.app/health (detailed status)");
+    console.log(
+      "   - https://your-app.railway.app/debug/webhook (webhook info)"
+    );
     console.log("   - Railway deployment logs");
     process.exit(0);
   } catch (error) {

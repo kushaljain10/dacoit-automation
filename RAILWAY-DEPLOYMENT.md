@@ -63,6 +63,9 @@ railway up
 After deployment, check these endpoints:
 
 ```bash
+# Basic test (should return "Bot server is running!")
+curl https://your-app.railway.app/test
+
 # Health check
 curl https://your-app.railway.app/health
 
