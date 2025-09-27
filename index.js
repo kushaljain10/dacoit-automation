@@ -1044,7 +1044,7 @@ app.get("/oauth/callback", async (req, res) => {
       refresh: token.refresh_token,
       accountId,
     });
-    saveStore(store); // Persist the authentication data
+    // Note: SQLite store automatically persists data
     res.send("Connected. You can return to Telegram.");
   } catch (e) {
     console.error(e?.response?.data || e.message);
