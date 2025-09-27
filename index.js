@@ -40,34 +40,138 @@ bot.catch((err, ctx) => {
   console.error("Bot error for update", ctx.update, err);
 });
 
-// Persistent file-based store
-const STORE_FILE = path.join(__dirname, "auth_store.json");
+// Production-safe authentication storage
+class AuthStore {
+  constructor() {
+    this.inMemoryStore = new Map();
+    this.isProduction =
+      process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT;
 
-// Helper functions for persistent storage
-const loadStore = () => {
-  try {
-    if (fs.existsSync(STORE_FILE)) {
-      const data = fs.readFileSync(STORE_FILE, "utf8");
-      return new Map(Object.entries(JSON.parse(data)));
+    // Load existing data on startup
+    this.loadInitialData();
+  }
+
+  loadInitialData() {
+    if (this.isProduction) {
+      // In production, try to load from environment variables (for single user)
+      const savedAuth = process.env.BASECAMP_SAVED_AUTH;
+      if (savedAuth) {
+        try {
+          const parsed = JSON.parse(savedAuth);
+          this.inMemoryStore.set(parsed.userId, {
+            access: parsed.access,
+            refresh: parsed.refresh,
+            accountId: parsed.accountId,
+          });
+          console.log("Loaded authentication from environment variables");
+        } catch (error) {
+          console.error("Error parsing saved auth from environment:", error);
+        }
+      }
+    } else {
+      // In development, still use file-based storage
+      try {
+        const STORE_FILE = path.join(__dirname, "auth_store.json");
+        if (fs.existsSync(STORE_FILE)) {
+          const data = fs.readFileSync(STORE_FILE, "utf8");
+          const parsed = JSON.parse(data);
+          this.inMemoryStore = new Map(Object.entries(parsed));
+          console.log(
+            `Loaded ${this.inMemoryStore.size} authentication(s) from local storage`
+          );
+        }
+      } catch (error) {
+        console.error("Error loading local store:", error);
+      }
     }
-  } catch (error) {
-    console.error("Error loading store:", error.message);
   }
-  return new Map();
-};
 
-const saveStore = (store) => {
-  try {
-    const data = JSON.stringify(Object.fromEntries(store), null, 2);
-    fs.writeFileSync(STORE_FILE, data, "utf8");
-  } catch (error) {
-    console.error("Error saving store:", error.message);
+  get(userId) {
+    return this.inMemoryStore.get(userId);
   }
-};
 
-// Initialize store from file
-const store = loadStore();
-console.log(`Loaded ${store.size} authentication(s) from persistent storage`);
+  set(userId, authData) {
+    this.inMemoryStore.set(userId, authData);
+
+    if (this.isProduction) {
+      // In production, save to environment variable (single user) or database
+      this.saveToProduction(userId, authData);
+    } else {
+      // In development, save to file
+      this.saveToFile();
+    }
+  }
+
+  saveToProduction(userId, authData) {
+    // For Railway, we'll log the auth data so it can be set as an env var
+    // This is for single-user scenarios. For multi-user, you'd use a database.
+    const authString = JSON.stringify({
+      userId,
+      access: authData.access,
+      refresh: authData.refresh,
+      accountId: authData.accountId,
+    });
+
+    console.log(
+      "🔐 IMPORTANT: Save this authentication data as BASECAMP_SAVED_AUTH environment variable:"
+    );
+    console.log("BASECAMP_SAVED_AUTH=" + authString);
+    console.log(
+      "Add this to your Railway environment variables to persist authentication."
+    );
+  }
+
+  saveToFile() {
+    try {
+      const STORE_FILE = path.join(__dirname, "auth_store.json");
+      const data = JSON.stringify(
+        Object.fromEntries(this.inMemoryStore),
+        null,
+        2
+      );
+      fs.writeFileSync(STORE_FILE, data, "utf8");
+    } catch (error) {
+      console.error("Error saving local store:", error);
+    }
+  }
+
+  // For database storage (optional future enhancement)
+  async saveToDatabase(userId, authData) {
+    // This would connect to your preferred database (PostgreSQL, MongoDB, etc.)
+    // Example with PostgreSQL:
+    /*
+    try {
+      await db.query(
+        'INSERT INTO user_auth (user_id, access_token, refresh_token, account_id) VALUES ($1, $2, $3, $4) ON CONFLICT (user_id) DO UPDATE SET access_token = $2, refresh_token = $3, account_id = $4',
+        [userId, authData.access, authData.refresh, authData.accountId]
+      );
+    } catch (error) {
+      console.error('Database save error:', error);
+    }
+    */
+  }
+
+  async loadFromDatabase() {
+    // This would load all auth data from database on startup
+    /*
+    try {
+      const result = await db.query('SELECT * FROM user_auth');
+      for (const row of result.rows) {
+        this.inMemoryStore.set(row.user_id, {
+          access: row.access_token,
+          refresh: row.refresh_token,
+          accountId: row.account_id
+        });
+      }
+    } catch (error) {
+      console.error('Database load error:', error);
+    }
+    */
+  }
+}
+
+// Initialize production-safe store
+const store = new AuthStore();
 
 /** ------------ Helpers ------------ **/
 const bc = (access) => ({
@@ -931,7 +1035,6 @@ app.get("/oauth/callback", async (req, res) => {
       refresh: token.refresh_token,
       accountId,
     });
-    saveStore(store); // Persist the authentication data
     res.send("Connected. You can return to Telegram.");
   } catch (e) {
     console.error(e?.response?.data || e.message);
@@ -940,4 +1043,29 @@ app.get("/oauth/callback", async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`OAuth server on :${PORT}`));
-bot.launch().then(() => console.log("Telegram bot launched."));
+
+// For Railway deployment - use webhooks instead of polling
+if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT) {
+  // Use webhooks for production (Railway)
+  const webhookUrl =
+    process.env.WEBHOOK_URL ||
+    `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`;
+
+  app.use(bot.webhookCallback("/webhook"));
+
+  bot.telegram
+    .setWebhook(webhookUrl)
+    .then(() => {
+      console.log(`Webhook set to: ${webhookUrl}`);
+    })
+    .catch((err) => {
+      console.error("Failed to set webhook:", err);
+    });
+
+  console.log("Telegram bot configured for webhook mode");
+} else {
+  // Use polling for local development
+  bot
+    .launch()
+    .then(() => console.log("Telegram bot launched in polling mode."));
+}
