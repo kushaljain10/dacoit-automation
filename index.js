@@ -789,7 +789,19 @@ bot.on("text", requireAuth, async (ctx) => {
   ctx.session.flow ??= { step: 0, selections: {} };
   let f = ctx.session.flow;
 
+  // Show welcome message if user hasn't started the flow
   if (!f.step) {
+    await ctx.reply(
+      "👋 *Welcome to Basecamp Task Bot!*\n\n" +
+        "I help you create tasks in Basecamp using AI-powered processing.\n\n" +
+        "🚀 *How to get started:*\n" +
+        "• Use /start to begin creating a new task\n" +
+        "• Use /stop to cancel and reset anytime\n" +
+        "• Use /help to see all available commands\n\n" +
+        "_Just send me a task description and I'll help you organize it!_",
+      { parse_mode: "Markdown" }
+    );
+
     await resetFlow(ctx);
     ctx.session.flow.step = 1;
     f = ctx.session.flow; // Update reference after reset
@@ -1213,6 +1225,24 @@ app.post("/debug/setup-webhook", async (req, res) => {
   }
 });
 
+// Manual bot commands setup endpoint
+app.post("/debug/setup-commands", async (req, res) => {
+  try {
+    await setupBotCommands();
+
+    // Get current commands to verify
+    const commands = await bot.telegram.getMyCommands();
+
+    res.json({
+      message: "Bot commands set successfully",
+      commands: commands,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Set up webhook endpoint for ALL environments (before server starts)
 app.get("/webhook", (req, res) => {
   res.json({
@@ -1252,6 +1282,22 @@ app.listen(PORT, () => {
     `🚂 Railway: ${!!process.env.RAILWAY_ENVIRONMENT ? "YES" : "NO"}`
   );
 });
+
+// Set up bot commands menu (works for both polling and webhook modes)
+const setupBotCommands = async () => {
+  try {
+    const commands = [
+      { command: "start", description: "Begin creating a new task" },
+      { command: "stop", description: "Cancel current conversation and reset" },
+      { command: "help", description: "Show available commands" },
+    ];
+
+    await bot.telegram.setMyCommands(commands);
+    console.log("✅ Bot commands menu set up successfully");
+  } catch (error) {
+    console.error("❌ Failed to set up bot commands menu:", error.message);
+  }
+};
 
 // For Railway deployment - use webhooks instead of polling
 if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT) {
@@ -1342,18 +1388,28 @@ if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT) {
     };
 
     // Start webhook setup after server is fully ready
-    setTimeout(setupWebhook, 10000); // 10 second delay
+    setTimeout(() => {
+      setupWebhook();
+      // Set up commands menu after webhook is configured
+      setTimeout(setupBotCommands, 2000);
+    }, 10000); // 10 second delay
   } else {
     console.log(
       "🤖 Running in webhook mode without Telegram webhook configured"
     );
+    // Still set up commands menu even without webhook
+    setTimeout(setupBotCommands, 5000);
   }
 } else {
   // Use polling for local development
   console.log("🔄 Starting bot in polling mode for development");
   bot
     .launch()
-    .then(() => console.log("✅ Telegram bot launched in polling mode"))
+    .then(() => {
+      console.log("✅ Telegram bot launched in polling mode");
+      // Set up commands menu after bot is launched
+      setTimeout(setupBotCommands, 2000);
+    })
     .catch((err) => {
       console.error("❌ Failed to launch bot:", err);
     });
