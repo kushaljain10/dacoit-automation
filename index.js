@@ -1089,6 +1089,35 @@ app.get("/test", (req, res) => {
   });
 });
 
+// Check authentication status
+app.get("/debug/auth-status", (req, res) => {
+  try {
+    const users = store.getAllUsers();
+    const authCount = users.length;
+    const auths = users.map((userId) => {
+      const auth = store.get(userId);
+      return {
+        userId,
+        platform: auth.platform,
+        accountId: auth.accountId,
+        hasValidTokens: !!(auth.access && auth.refresh),
+      };
+    });
+
+    res.json({
+      status: "ok",
+      authenticated_users: authCount,
+      auth_details: auths,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: "Failed to get auth status",
+      message: error.message,
+    });
+  }
+});
+
 // Manual webhook reset endpoint
 app.post("/debug/reset-webhook", async (req, res) => {
   try {
@@ -1134,7 +1163,18 @@ app.post("/debug/setup-basecamp-webhooks", async (req, res) => {
     // Get auth token from any authenticated user (preferably an admin)
     const users = store.getAllUsers();
     if (!users.length) {
-      return res.status(400).json({ error: "No authenticated users found" });
+      return res.status(400).json({
+        error: "No authenticated users found",
+        help: "Please authenticate with Basecamp first by:",
+        steps: [
+          "1. Start a chat with your Telegram bot",
+          "2. Send any message",
+          "3. Click the Basecamp authentication link",
+          "4. Authorize the app",
+          "5. Return to Telegram and confirm connection",
+          "6. Try this webhook setup again",
+        ],
+      });
     }
 
     const auth = store.get(users[0]);
