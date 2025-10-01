@@ -1094,26 +1094,40 @@ app.get("/debug/auth-status", (req, res) => {
   try {
     const users = store.getAllUsers();
     const authCount = users.length;
-    const auths = users.map((userId) => {
-      const auth = store.get(userId);
-      return {
-        userId,
-        platform: auth.platform,
-        accountId: auth.accountId,
-        hasValidTokens: !!(auth.access && auth.refresh),
-      };
-    });
+    const auths = users
+      .map((userId) => {
+        const auth = store.get(userId);
+        if (!auth) {
+          return {
+            userId,
+            error: "No auth data found",
+            hasValidTokens: false,
+          };
+        }
+        return {
+          userId,
+          platform: auth.platform || "unknown",
+          accountId: auth.accountId,
+          hasValidTokens: !!(auth.access && auth.refresh),
+          lastUpdated: auth.updated_at,
+        };
+      })
+      .filter((auth) => auth); // Remove any null entries
 
     res.json({
       status: "ok",
       authenticated_users: authCount,
+      valid_auths: auths.filter((a) => a.hasValidTokens).length,
       auth_details: auths,
+      database_connected: store && store.db !== null,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
+    console.error("Auth status error:", error);
     res.status(500).json({
       error: "Failed to get auth status",
       message: error.message,
+      stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
     });
   }
 });
