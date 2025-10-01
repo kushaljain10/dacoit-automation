@@ -6,7 +6,10 @@ const dayjs = require("dayjs");
 const customParseFormat = require("dayjs/plugin/customParseFormat");
 const fs = require("fs");
 const path = require("path");
-const Database = require("better-sqlite3");
+const { slackApp } = require("./slack");
+const { processTaskWithAI } = require("./ai");
+const { SQLiteAuthStore } = require("./store");
+const { bc } = require("./basecamp");
 require("dotenv").config();
 dayjs.extend(customParseFormat);
 
@@ -1053,44 +1056,78 @@ bot.action(/^proj_page_(\d+)$/, requireAuth, async (ctx) => {
 });
 
 /** ------------ OAuth callback server ------------ **/
+// Helper function to handle Basecamp OAuth
+const handleBasecampOAuth = async (code, redirectUri) => {
+  const body = qs.stringify({
+    client_id: BASECAMP_CLIENT_ID,
+    client_secret: BASECAMP_CLIENT_SECRET,
+    redirect_uri: redirectUri,
+    code,
+  });
+  const tokenUrl =
+    "https://launchpad.37signals.com/authorization/token?type=web_server";
+  const { data: token } = await axios.post(tokenUrl, body, {
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  });
+
+  // Discover account id via authorization.json
+  const { data: auth } = await axios.get(
+    "https://launchpad.37signals.com/authorization.json",
+    {
+      headers: {
+        Authorization: `Bearer ${token.access_token}`,
+        Accept: "application/json",
+        "User-Agent": USER_AGENT,
+      },
+    }
+  );
+  const accountId =
+    Array.isArray(auth.accounts) && auth.accounts.length
+      ? auth.accounts[0].id
+      : auth.accounts.id;
+
+  return {
+    access_token: token.access_token,
+    refresh_token: token.refresh_token,
+    accountId,
+  };
+};
+
+// Telegram OAuth callback
 app.get("/oauth/callback", async (req, res) => {
   try {
     const { code, state } = req.query; // state carries telegram user id
-    const body = qs.stringify({
-      client_id: BASECAMP_CLIENT_ID,
-      client_secret: BASECAMP_CLIENT_SECRET,
-      redirect_uri: REDIRECT_URI,
-      code,
-    });
-    const tokenUrl =
-      "https://launchpad.37signals.com/authorization/token?type=web_server";
-    const { data: token } = await axios.post(tokenUrl, body, {
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    });
-
-    // Discover account id via authorization.json
-    const { data: auth } = await axios.get(
-      "https://launchpad.37signals.com/authorization.json",
-      {
-        headers: {
-          Authorization: `Bearer ${token.access_token}`,
-          Accept: "application/json",
-          "User-Agent": USER_AGENT,
-        },
-      }
-    );
-    const accountId =
-      Array.isArray(auth.accounts) && auth.accounts.length
-        ? auth.accounts[0].id
-        : auth.accounts.id;
+    const auth = await handleBasecampOAuth(code, REDIRECT_URI);
 
     store.set(String(state), {
-      access: token.access_token,
-      refresh: token.refresh_token,
-      accountId,
+      access: auth.access_token,
+      refresh: auth.refresh_token,
+      accountId: auth.accountId,
+      platform: "telegram",
     });
-    // Note: SQLite store automatically persists data
+
     res.send("Connected. You can return to Telegram.");
+  } catch (e) {
+    console.error(e?.response?.data || e.message);
+    res.status(500).send("OAuth failed.");
+  }
+});
+
+// Slack OAuth callback
+app.get("/oauth/callback/slack", async (req, res) => {
+  try {
+    const { code, state } = req.query; // state carries slack user id
+    const slackRedirectUri = `${process.env.APP_URL}/oauth/callback/slack`;
+    const auth = await handleBasecampOAuth(code, slackRedirectUri);
+
+    store.set(String(state), {
+      access: auth.access_token,
+      refresh: auth.refresh_token,
+      accountId: auth.accountId,
+      platform: "slack",
+    });
+
+    res.send("Connected. You can return to Slack.");
   } catch (e) {
     console.error(e?.response?.data || e.message);
     res.status(500).send("OAuth failed.");
@@ -1275,12 +1312,26 @@ app.post("/webhook", async (req, res, next) => {
   }
 });
 
+// Start both Telegram and Slack bots
+const startBots = async () => {
+  try {
+    // Start Slack app
+    await slackApp.start(PORT);
+    console.log("⚡️ Slack Bolt app is running!");
+  } catch (error) {
+    console.error("❌ Error starting Slack app:", error);
+  }
+};
+
 app.listen(PORT, () => {
   console.log(`🚀 Server started on port :${PORT}`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || "development"}`);
   console.log(
     `🚂 Railway: ${!!process.env.RAILWAY_ENVIRONMENT ? "YES" : "NO"}`
   );
+
+  // Start the bots after server is ready
+  startBots().catch(console.error);
 });
 
 // Set up bot commands menu (works for both polling and webhook modes)
