@@ -90,8 +90,8 @@ class SQLiteAuthStore {
   getAllUsers() {
     if (!this.db) return [];
     try {
-      const stmt = this.db.prepare("SELECT user_id, platform FROM user_auth");
-      return stmt.all();
+      const stmt = this.db.prepare("SELECT user_id FROM user_auth");
+      return stmt.all().map((row) => row.user_id);
     } catch (error) {
       console.error("Error getting all users:", error.message);
       return [];

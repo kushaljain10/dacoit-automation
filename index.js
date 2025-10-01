@@ -1092,35 +1092,54 @@ app.get("/test", (req, res) => {
 // Check authentication status
 app.get("/debug/auth-status", (req, res) => {
   try {
+    // Get all users and their auth data
     const users = store.getAllUsers();
-    const authCount = users.length;
+    console.log("Found users:", users);
+
     const auths = users
       .map((userId) => {
+        console.log("Checking auth for user:", userId);
         const auth = store.get(userId);
+        console.log("Auth data:", auth);
+
         if (!auth) {
           return {
-            userId,
+            userId: userId,
             error: "No auth data found",
             hasValidTokens: false,
           };
         }
+
         return {
-          userId,
+          userId: userId,
           platform: auth.platform || "unknown",
           accountId: auth.accountId,
           hasValidTokens: !!(auth.access && auth.refresh),
-          lastUpdated: auth.updated_at,
         };
       })
       .filter((auth) => auth); // Remove any null entries
 
     res.json({
       status: "ok",
-      authenticated_users: authCount,
+      authenticated_users: users.length,
       valid_auths: auths.filter((a) => a.hasValidTokens).length,
       auth_details: auths,
       database_connected: store && store.db !== null,
       timestamp: new Date().toISOString(),
+      help:
+        auths.length === 0
+          ? {
+              message: "No authenticated users found",
+              steps: [
+                "1. Start a chat with your Telegram bot",
+                "2. Send any message",
+                "3. Click the Basecamp authentication link",
+                "4. Authorize the app",
+                "5. Return to Telegram and confirm connection",
+                "6. Try checking auth status again",
+              ],
+            }
+          : undefined,
     });
   } catch (error) {
     console.error("Auth status error:", error);
