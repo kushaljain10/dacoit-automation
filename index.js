@@ -6,10 +6,14 @@ const dayjs = require("dayjs");
 const customParseFormat = require("dayjs/plugin/customParseFormat");
 const fs = require("fs");
 const path = require("path");
-const { slackApp } = require("./slack");
 const { processTaskWithAI } = require("./ai");
 const { SQLiteAuthStore } = require("./store");
 const { bc } = require("./basecamp");
+const { sendToSlack } = require("./slack-notifications");
+const {
+  setupWebhooksForAllProjects,
+  listProjectWebhooks,
+} = require("./basecamp-webhooks");
 require("dotenv").config();
 dayjs.extend(customParseFormat);
 
@@ -879,16 +883,54 @@ app.get("/oauth/callback", async (req, res) => {
   }
 });
 
-// Slack Events API endpoint
-app.post("/slack/events", async (req, res) => {
-  // Handle Slack Events API URL verification
-  if (req.body?.type === "url_verification") {
-    console.log("Received Slack Events API verification challenge");
-    return res.json({ challenge: req.body.challenge });
-  }
+// Basecamp webhook endpoint
+app.post("/basecamp/webhook", async (req, res) => {
+  try {
+    const event = req.body;
+    console.log("Received Basecamp webhook:", {
+      kind: event.kind,
+      recording: event.recording,
+      creator: event.creator,
+    });
 
-  // Handle other Slack events here
-  res.sendStatus(200);
+    // Get the project ID from the event
+    const projectId = event.recording.bucket.id;
+    const channelId = getChannelForProject(projectId);
+
+    if (!channelId) {
+      console.log(
+        `No Slack channel configured for project ${projectId}, skipping notification`
+      );
+      return res.sendStatus(200);
+    }
+
+    // Format the event data
+    const data = {
+      title: event.recording.title,
+      description: event.recording.content,
+      project_name: event.recording.bucket.name,
+      creator_name: event.creator.name,
+      url: event.recording.app_url,
+      due_date: event.recording.due_on,
+      completer_name: event.recording.completer?.name,
+    };
+
+    // Send to Slack based on event type
+    switch (event.kind) {
+      case "todo_created":
+      case "todo_completed":
+      case "comment_created":
+        await sendToSlack(channelId, event.kind, data);
+        break;
+      default:
+        console.log(`Unhandled Basecamp event type: ${event.kind}`);
+    }
+
+    res.sendStatus(200);
+  } catch (error) {
+    console.error("Error processing Basecamp webhook:", error);
+    res.sendStatus(500);
+  }
 });
 
 // Slack OAuth callback
@@ -1086,6 +1128,65 @@ app.post("/debug/setup-webhook", async (req, res) => {
   }
 });
 
+// Setup Basecamp webhooks for all projects
+app.post("/debug/setup-basecamp-webhooks", async (req, res) => {
+  try {
+    // Get auth token from any authenticated user (preferably an admin)
+    const users = store.getAllUsers();
+    if (!users.length) {
+      return res.status(400).json({ error: "No authenticated users found" });
+    }
+
+    const auth = store.get(users[0]);
+    if (!auth) {
+      return res.status(400).json({ error: "No valid authentication found" });
+    }
+
+    const results = await setupWebhooksForAllProjects(
+      auth.accountId,
+      auth.access
+    );
+    res.json({
+      message: "Basecamp webhooks setup completed",
+      results,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("Failed to set up Basecamp webhooks:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// List Basecamp webhooks for a project
+app.get("/debug/list-basecamp-webhooks/:projectId", async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const users = store.getAllUsers();
+    if (!users.length) {
+      return res.status(400).json({ error: "No authenticated users found" });
+    }
+
+    const auth = store.get(users[0]);
+    if (!auth) {
+      return res.status(400).json({ error: "No valid authentication found" });
+    }
+
+    const webhooks = await listProjectWebhooks(
+      auth.accountId,
+      projectId,
+      auth.access
+    );
+    res.json({
+      message: "Basecamp webhooks retrieved",
+      webhooks,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("Failed to list Basecamp webhooks:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Manual bot commands setup endpoint
 app.post("/debug/setup-commands", async (req, res) => {
   try {
@@ -1136,15 +1237,19 @@ app.post("/webhook", async (req, res, next) => {
   }
 });
 
-// Start both Telegram and Slack bots
-const startBots = async () => {
-  try {
-    // Start Slack app
-    await slackApp.start(PORT);
-    console.log("⚡️ Slack Bolt app is running!");
-  } catch (error) {
-    console.error("❌ Error starting Slack app:", error);
-  }
+// Configure Slack notifications for Basecamp projects
+const setupSlackNotifications = () => {
+  // Example: Map Basecamp projects to Slack channels
+  // You can load these mappings from environment variables or a config file
+  const projectMappings = process.env.BASECAMP_SLACK_MAPPINGS
+    ? JSON.parse(process.env.BASECAMP_SLACK_MAPPINGS)
+    : {};
+
+  Object.entries(projectMappings).forEach(([projectId, channelId]) => {
+    mapProjectToChannel(projectId, channelId);
+  });
+
+  console.log("✅ Slack notification mappings configured");
 };
 
 app.listen(PORT, () => {
@@ -1154,8 +1259,8 @@ app.listen(PORT, () => {
     `🚂 Railway: ${!!process.env.RAILWAY_ENVIRONMENT ? "YES" : "NO"}`
   );
 
-  // Start the bots after server is ready
-  startBots().catch(console.error);
+  // Set up Slack notifications
+  setupSlackNotifications();
 });
 
 // Set up bot commands menu (works for both polling and webhook modes)
