@@ -879,24 +879,82 @@ app.get("/oauth/callback", async (req, res) => {
   }
 });
 
+// Slack Events API endpoint
+app.post("/slack/events", async (req, res) => {
+  // Handle Slack Events API URL verification
+  if (req.body?.type === "url_verification") {
+    console.log("Received Slack Events API verification challenge");
+    return res.json({ challenge: req.body.challenge });
+  }
+
+  // Handle other Slack events here
+  res.sendStatus(200);
+});
+
 // Slack OAuth callback
 app.get("/oauth/callback/slack", async (req, res) => {
   try {
-    const { code, state } = req.query; // state carries slack user id
-    const slackRedirectUri = `${process.env.APP_URL}/oauth/callback/slack`;
-    const auth = await handleBasecampOAuth(code, slackRedirectUri);
+    const { code, state } = req.query;
 
-    store.set(String(state), {
-      access: auth.access_token,
-      refresh: auth.refresh_token,
-      accountId: auth.accountId,
-      platform: "slack",
+    // Validate required parameters
+    if (!code) {
+      console.error("OAuth callback missing code parameter");
+      return res.status(400).send("OAuth failed: Missing authorization code");
+    }
+
+    if (!state) {
+      console.error("OAuth callback missing state parameter");
+      return res.status(400).send("OAuth failed: Missing state parameter");
+    }
+
+    console.log("Received Basecamp OAuth callback for Slack:", {
+      code: "REDACTED",
+      state: state,
+      redirect_uri: `${process.env.APP_URL}/oauth/callback/slack`,
     });
 
-    res.send("Connected. You can return to Slack.");
+    const slackRedirectUri = `${process.env.APP_URL}/oauth/callback/slack`;
+
+    try {
+      const auth = await handleBasecampOAuth(code, slackRedirectUri);
+      console.log("Successfully obtained Basecamp tokens for Slack user:", {
+        state: state,
+        accountId: auth.accountId,
+      });
+
+      store.set(String(state), {
+        access: auth.access_token,
+        refresh: auth.refresh_token,
+        accountId: auth.accountId,
+        platform: "slack",
+      });
+
+      console.log("Successfully stored auth data for Slack user:", state);
+      res.send(
+        "Connected! You can return to Slack and continue creating tasks."
+      );
+    } catch (authError) {
+      console.error("Error during Basecamp OAuth:", {
+        error: authError.message,
+        response: authError.response?.data,
+        status: authError.response?.status,
+      });
+      res
+        .status(500)
+        .send(
+          "OAuth failed: Could not authenticate with Basecamp. Please try again or contact support if the issue persists."
+        );
+    }
   } catch (e) {
-    console.error(e?.response?.data || e.message);
-    res.status(500).send("OAuth failed.");
+    console.error("Unexpected error in Slack OAuth callback:", {
+      error: e.message,
+      stack: e.stack,
+    });
+    res
+      .status(500)
+      .send(
+        "OAuth failed: An unexpected error occurred. Please try again or contact support if the issue persists."
+      );
   }
 });
 
