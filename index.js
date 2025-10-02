@@ -931,8 +931,9 @@ app.post("/basecamp/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // For todo_created events, fetch the full todo details to get assignees
+    // For todo_created events, fetch the full todo details to get assignees and due date
     let assignees = [];
+    let dueDate = null;
     if (event.kind === "todo_created" && event.recording.url) {
       try {
         const users = store.getAllUsers();
@@ -943,7 +944,12 @@ app.post("/basecamp/webhook", async (req, res) => {
               event.recording.url
             );
             assignees = todoDetails.assignees || [];
-            console.log("Fetched todo assignees:", assignees);
+            dueDate = todoDetails.due_on || null;
+            console.log("Fetched todo details:", {
+              assignees: assignees,
+              due_on: dueDate,
+              all_keys: Object.keys(todoDetails),
+            });
           }
         }
       } catch (error) {
@@ -961,7 +967,7 @@ app.post("/basecamp/webhook", async (req, res) => {
       project_name: event.recording.bucket.name,
       creator_name: event.creator.name,
       url: event.recording.app_url,
-      due_date: event.recording.due_on,
+      due_date: dueDate || event.recording.due_on || null,
       completer_name: event.recording.completer?.name,
       assignees: assignees,
       content: event.recording.content, // For comments
@@ -971,6 +977,8 @@ app.post("/basecamp/webhook", async (req, res) => {
       title: data.title,
       assignees_count: data.assignees.length,
       assignees: data.assignees,
+      due_date: data.due_date,
+      due_date_type: typeof data.due_date,
     });
 
     // Send to Slack based on event type

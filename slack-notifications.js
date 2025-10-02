@@ -22,6 +22,27 @@ const formatBasecampUpdate = (type, data) => {
 
       console.log("Final assignees text for Slack:", assigneesText);
 
+      // Format due date nicely
+      let dueDateText = "No due date";
+      if (data.due_date) {
+        // Basecamp sends dates in YYYY-MM-DD format
+        const date = new Date(data.due_date);
+        if (!isNaN(date.getTime())) {
+          dueDateText = date.toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          });
+        } else {
+          dueDateText = data.due_date; // Use as-is if parsing fails
+        }
+      }
+
+      console.log("Due date formatting:", {
+        raw: data.due_date,
+        formatted: dueDateText,
+      });
+
       return {
         blocks: [
           {
@@ -55,7 +76,7 @@ const formatBasecampUpdate = (type, data) => {
               },
               {
                 type: "mrkdwn",
-                text: `*Due Date:*\n${data.due_date || "No due date"}`,
+                text: `*Due Date:*\n${dueDateText}`,
               },
               {
                 type: "mrkdwn",
