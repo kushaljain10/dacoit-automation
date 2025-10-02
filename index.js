@@ -897,11 +897,11 @@ app.post("/basecamp/webhook", async (req, res) => {
 
     // Get the project ID from the event
     const projectId = event.recording.bucket.id;
-    const channelId = getChannelForProject(projectId);
+    const channelId = process.env.SLACK_DEFAULT_CHANNEL;
 
     if (!channelId) {
       console.log(
-        `No Slack channel configured for project ${projectId}, skipping notification`
+        "No default Slack channel configured (SLACK_DEFAULT_CHANNEL), skipping notification"
       );
       return res.sendStatus(200);
     }
@@ -1314,17 +1314,17 @@ app.post("/webhook", async (req, res, next) => {
 
 // Configure Slack notifications for Basecamp projects
 const setupSlackNotifications = () => {
-  // Example: Map Basecamp projects to Slack channels
-  // You can load these mappings from environment variables or a config file
-  const projectMappings = process.env.BASECAMP_SLACK_MAPPINGS
-    ? JSON.parse(process.env.BASECAMP_SLACK_MAPPINGS)
-    : {};
-
-  Object.entries(projectMappings).forEach(([projectId, channelId]) => {
-    mapProjectToChannel(projectId, channelId);
-  });
-
-  console.log("✅ Slack notification mappings configured");
+  // Using a single default channel for all notifications
+  const defaultChannel = process.env.SLACK_DEFAULT_CHANNEL;
+  if (!defaultChannel) {
+    console.log(
+      "⚠️ No default Slack channel configured (SLACK_DEFAULT_CHANNEL)"
+    );
+  } else {
+    console.log(
+      `✅ Slack notifications configured to channel: ${defaultChannel}`
+    );
+  }
 };
 
 app.listen(PORT, () => {
