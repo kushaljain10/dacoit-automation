@@ -956,50 +956,52 @@ app.post("/basecamp/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // For todo_created events, fetch the full todo details to get assignees and due date
-    let assignees = [];
-    let dueDate = null;
+    // For todo_created events, fetch the full todo details to get all information
+    let todoDetails = null;
     if (event.kind === "todo_created" && event.recording.url) {
       try {
         const users = store.getAllUsers();
         if (users.length > 0) {
           const auth = store.get(users[0]);
           if (auth) {
-            const { data: todoDetails } = await bc(auth.access).get(
+            const { data: fetchedTodo } = await bc(auth.access).get(
               event.recording.url
             );
-            assignees = todoDetails.assignees || [];
-            dueDate = todoDetails.due_on || null;
-            console.log("Fetched todo details:", {
-              assignees: assignees,
-              due_on: dueDate,
+            todoDetails = fetchedTodo;
+            console.log("Fetched full todo details:", {
+              title: todoDetails.title,
+              content: todoDetails.content,
+              description: todoDetails.description,
+              assignees: todoDetails.assignees,
+              due_on: todoDetails.due_on,
               all_keys: Object.keys(todoDetails),
             });
           }
         }
       } catch (error) {
-        console.error(
-          "Error fetching todo details for assignees:",
-          error.message
-        );
+        console.error("Error fetching full todo details:", error.message);
       }
     }
 
     // Format the event data
     const data = {
-      title: event.recording.title,
-      description: event.recording.content,
+      title: todoDetails?.title || event.recording.title,
+      description:
+        todoDetails?.description ||
+        todoDetails?.content ||
+        event.recording.content,
       project_name: event.recording.bucket.name,
       creator_name: event.creator.name,
       url: event.recording.app_url,
-      due_date: dueDate || event.recording.due_on || null,
+      due_date: todoDetails?.due_on || event.recording.due_on || null,
       completer_name: event.recording.completer?.name,
-      assignees: assignees,
+      assignees: todoDetails?.assignees || [],
       content: event.recording.content, // For comments
     };
 
     console.log("Formatted data for Slack:", {
       title: data.title,
+      description: data.description,
       assignees_count: data.assignees.length,
       assignees: data.assignees,
       due_date: data.due_date,
