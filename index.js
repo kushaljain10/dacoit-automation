@@ -36,6 +36,7 @@ const whitelist = new Set(
     .filter(Boolean)
 );
 const app = express();
+app.use(express.json()); // Add JSON body parser middleware
 const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
 bot.use(session());
 bot.use((ctx, next) => {
@@ -889,7 +890,31 @@ app.get("/oauth/callback", async (req, res) => {
 app.post("/basecamp/webhook", async (req, res) => {
   try {
     const event = req.body;
-    console.log("Received Basecamp webhook:", {
+
+    // Validate webhook payload
+    if (!event || typeof event !== "object") {
+      console.error("Invalid webhook payload received:", event);
+      return res.status(400).json({ error: "Invalid webhook payload" });
+    }
+
+    console.log(
+      "Received Basecamp webhook payload:",
+      JSON.stringify(event, null, 2)
+    );
+
+    // Validate required fields
+    if (!event.kind || !event.recording || !event.recording.bucket) {
+      console.error("Missing required fields in webhook payload:", {
+        has_kind: !!event.kind,
+        has_recording: !!event.recording,
+        has_bucket: event.recording?.bucket,
+      });
+      return res
+        .status(400)
+        .json({ error: "Missing required fields in webhook payload" });
+    }
+
+    console.log("Processing Basecamp webhook:", {
       kind: event.kind,
       recording: event.recording,
       creator: event.creator,
