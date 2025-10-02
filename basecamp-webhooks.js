@@ -41,11 +41,9 @@ const createWebhookForProject = async (accountId, projectId, access_token) => {
         Accept: "application/json",
       },
       data: {
-        webhook: {
-          payload_url: webhookUrl,
-          types: ["todo_created", "todo_completed"],
-          active: true,
-        },
+        payload_url: webhookUrl,
+        types: ["todo_created", "todo_completed", "comment_created"],
+        active: true,
       },
     });
     console.log(`✅ Created webhook for project ${projectId}:`, response.data);
