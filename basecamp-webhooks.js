@@ -42,7 +42,7 @@ const createWebhookForProject = async (accountId, projectId, access_token) => {
       },
       data: {
         payload_url: webhookUrl,
-        types: ["todo_created", "todo_completed", "comment_created"],
+        types: ["Todo", "Comment"],
         active: true,
       },
     });
