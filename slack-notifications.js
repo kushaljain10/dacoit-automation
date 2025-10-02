@@ -3,9 +3,6 @@ const { WebClient } = require("@slack/web-api");
 // Initialize Slack Web Client
 const slack = new WebClient(process.env.SLACK_BOT_TOKEN);
 
-// The specific Slack channel to send notifications to
-const SLACK_CHANNEL = "C09GW2PEFF0";
-
 // Helper function to format Basecamp updates for Slack
 const formatBasecampUpdate = (type, data) => {
   switch (type) {
@@ -218,7 +215,7 @@ const sendToSlack = async (channelId, type, data) => {
       ...message,
     });
     console.log(
-      `Successfully sent ${type} notification to Slack channel ${SLACK_CHANNEL}`
+      `Successfully sent ${type} notification to Slack channel ${channelId}`
     );
   } catch (error) {
     console.error("Error sending message to Slack:", error);
