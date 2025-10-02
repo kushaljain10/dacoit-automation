@@ -10,23 +10,17 @@ const formatBasecampUpdate = (type, data) => {
       // Build assignees text
       let assigneesText = "Not assigned";
 
-      // Log for debugging
-      console.log("Assignees data received:", {
-        assignees: data.assignees,
-        assignees_type: typeof data.assignees,
-        assignees_length: data.assignees?.length,
-      });
-
       if (
         data.assignees &&
         Array.isArray(data.assignees) &&
         data.assignees.length > 0
       ) {
-        assigneesText = data.assignees.map((a) => a.name || a).join(", ");
-      } else if (data.assignee) {
-        // Some Basecamp events might use 'assignee' (singular) instead
-        assigneesText = data.assignee.name || data.assignee;
+        assigneesText = data.assignees
+          .map((a) => a.name || a.email_address || "Unknown")
+          .join(", ");
       }
+
+      console.log("Final assignees text for Slack:", assigneesText);
 
       return {
         blocks: [

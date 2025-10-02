@@ -916,9 +916,7 @@ app.post("/basecamp/webhook", async (req, res) => {
 
     console.log("Processing Basecamp webhook:", {
       kind: event.kind,
-      recording_keys: Object.keys(event.recording),
-      has_assignees: !!event.recording.assignees,
-      assignees: event.recording.assignees,
+      recording: JSON.stringify(event.recording, null, 2),
       creator: event.creator,
     });
 
@@ -933,6 +931,29 @@ app.post("/basecamp/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
+    // For todo_created events, fetch the full todo details to get assignees
+    let assignees = [];
+    if (event.kind === "todo_created" && event.recording.url) {
+      try {
+        const users = store.getAllUsers();
+        if (users.length > 0) {
+          const auth = store.get(users[0]);
+          if (auth) {
+            const { data: todoDetails } = await bc(auth.access).get(
+              event.recording.url
+            );
+            assignees = todoDetails.assignees || [];
+            console.log("Fetched todo assignees:", assignees);
+          }
+        }
+      } catch (error) {
+        console.error(
+          "Error fetching todo details for assignees:",
+          error.message
+        );
+      }
+    }
+
     // Format the event data
     const data = {
       title: event.recording.title,
@@ -942,17 +963,14 @@ app.post("/basecamp/webhook", async (req, res) => {
       url: event.recording.app_url,
       due_date: event.recording.due_on,
       completer_name: event.recording.completer?.name,
-      assignees: event.recording.assignees || [],
-      assignee: event.recording.assignee || null, // Singular form
+      assignees: assignees,
       content: event.recording.content, // For comments
     };
 
     console.log("Formatted data for Slack:", {
       title: data.title,
-      has_assignees: !!(data.assignees && data.assignees.length > 0),
-      has_assignee: !!data.assignee,
+      assignees_count: data.assignees.length,
       assignees: data.assignees,
-      assignee: data.assignee,
     });
 
     // Send to Slack based on event type
