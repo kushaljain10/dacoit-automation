@@ -916,7 +916,9 @@ app.post("/basecamp/webhook", async (req, res) => {
 
     console.log("Processing Basecamp webhook:", {
       kind: event.kind,
-      recording: event.recording,
+      recording_keys: Object.keys(event.recording),
+      has_assignees: !!event.recording.assignees,
+      assignees: event.recording.assignees,
       creator: event.creator,
     });
 
@@ -941,8 +943,17 @@ app.post("/basecamp/webhook", async (req, res) => {
       due_date: event.recording.due_on,
       completer_name: event.recording.completer?.name,
       assignees: event.recording.assignees || [],
+      assignee: event.recording.assignee || null, // Singular form
       content: event.recording.content, // For comments
     };
+
+    console.log("Formatted data for Slack:", {
+      title: data.title,
+      has_assignees: !!(data.assignees && data.assignees.length > 0),
+      has_assignee: !!data.assignee,
+      assignees: data.assignees,
+      assignee: data.assignee,
+    });
 
     // Send to Slack based on event type
     switch (event.kind) {

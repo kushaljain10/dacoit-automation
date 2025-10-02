@@ -9,8 +9,23 @@ const formatBasecampUpdate = (type, data) => {
     case "todo_created":
       // Build assignees text
       let assigneesText = "Not assigned";
-      if (data.assignees && data.assignees.length > 0) {
-        assigneesText = data.assignees.map((a) => a.name).join(", ");
+
+      // Log for debugging
+      console.log("Assignees data received:", {
+        assignees: data.assignees,
+        assignees_type: typeof data.assignees,
+        assignees_length: data.assignees?.length,
+      });
+
+      if (
+        data.assignees &&
+        Array.isArray(data.assignees) &&
+        data.assignees.length > 0
+      ) {
+        assigneesText = data.assignees.map((a) => a.name || a).join(", ");
+      } else if (data.assignee) {
+        // Some Basecamp events might use 'assignee' (singular) instead
+        assigneesText = data.assignee.name || data.assignee;
       }
 
       return {
