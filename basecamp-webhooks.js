@@ -4,16 +4,50 @@ const { bc } = require("./basecamp");
 // Function to create a webhook for a project
 const createWebhookForProject = async (accountId, projectId, access_token) => {
   try {
-    const payload = {
-      webhook: {
-        payload_url: `${process.env.APP_URL}/basecamp/webhook`,
-        types: ["todo_created"], // We only want todo creation events
-      },
-    };
-
     const url = `https://3.basecampapi.com/${accountId}/buckets/${projectId}/webhooks.json`;
 
-    const response = await bc(access_token).post(url, JSON.stringify(payload));
+    // First check if webhook already exists
+    const { data: existingWebhooks } = await axios({
+      method: "get",
+      url: url,
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        "Content-Type": "application/json",
+        "User-Agent":
+          process.env.USER_AGENT || "Basecamp Task Bot (Notifications)",
+        Accept: "application/json",
+      },
+    });
+
+    const webhookUrl = `${process.env.APP_URL}/basecamp/webhook`;
+    const exists = existingWebhooks.some(
+      (hook) => hook.payload_url === webhookUrl
+    );
+
+    if (exists) {
+      console.log(`Webhook already exists for project ${projectId}`);
+      return { status: "exists" };
+    }
+
+    // Create new webhook
+    const response = await axios({
+      method: "post",
+      url: url,
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        "Content-Type": "application/json",
+        "User-Agent":
+          process.env.USER_AGENT || "Basecamp Task Bot (Notifications)",
+        Accept: "application/json",
+      },
+      data: {
+        webhook: {
+          payload_url: webhookUrl,
+          types: ["todo_created", "todo_completed"],
+          active: true,
+        },
+      },
+    });
     console.log(`✅ Created webhook for project ${projectId}:`, response.data);
     return response.data;
   } catch (error) {
