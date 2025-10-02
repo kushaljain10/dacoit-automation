@@ -6,8 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "clean": "rm -rf node_modules package-lock.json",
-    "build": "npm install --omit=dev --no-package-lock",
+    "build": "npm install",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "engines": {
