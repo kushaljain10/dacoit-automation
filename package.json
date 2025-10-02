@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "build": "npm ci",
+    "build": "npm install --production --prefer-offline=false --no-cache",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "engines": {
