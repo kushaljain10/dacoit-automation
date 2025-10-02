@@ -377,7 +377,7 @@ const createTodoList = async (
     console.log(`Creating todolist with payload:`, payload);
     console.log(`POST URL: ${url}`);
 
-    const { data } = await bc(access).post(url, JSON.stringify(payload));
+    const { data } = await bc(access).post(url, payload);
     console.log(`Successfully created todolist:`, data);
     return data;
   } catch (error) {
@@ -492,7 +492,7 @@ const createTodo = async (
   const url = `https://3.basecampapi.com/${accountId}/buckets/${projectId}/todolists/${todoListId}/todos.json`;
   console.log(`POST URL: ${url}`);
 
-  const response = await bc(access).post(url, JSON.stringify(payload));
+  const response = await bc(access).post(url, payload);
   const { data } = response;
 
   console.log(`Full API response status:`, response.status);
