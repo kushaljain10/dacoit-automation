@@ -922,11 +922,36 @@ app.post("/basecamp/webhook", async (req, res) => {
 
     // Get the project ID from the event
     const projectId = event.recording.bucket.id;
-    const channelId = process.env.SLACK_DEFAULT_CHANNEL;
+
+    // Get channel for this project (with fallback to default channel)
+    let channelId = null;
+
+    // Try to get project-specific channel from mapping
+    if (process.env.BASECAMP_SLACK_MAPPINGS) {
+      try {
+        const mappings = JSON.parse(process.env.BASECAMP_SLACK_MAPPINGS);
+        channelId = mappings[projectId];
+        if (channelId) {
+          console.log(
+            `Using project-specific channel ${channelId} for project ${projectId}`
+          );
+        }
+      } catch (error) {
+        console.error("Error parsing BASECAMP_SLACK_MAPPINGS:", error.message);
+      }
+    }
+
+    // Fallback to default channel if no project-specific mapping found
+    if (!channelId) {
+      channelId = process.env.SLACK_DEFAULT_CHANNEL;
+      console.log(
+        `Using default channel ${channelId} for project ${projectId}`
+      );
+    }
 
     if (!channelId) {
       console.log(
-        "No default Slack channel configured (SLACK_DEFAULT_CHANNEL), skipping notification"
+        "No Slack channel configured (neither project-specific nor default), skipping notification"
       );
       return res.sendStatus(200);
     }
@@ -1378,16 +1403,38 @@ app.post("/webhook", async (req, res, next) => {
 
 // Configure Slack notifications for Basecamp projects
 const setupSlackNotifications = () => {
-  // Using a single default channel for all notifications
   const defaultChannel = process.env.SLACK_DEFAULT_CHANNEL;
-  if (!defaultChannel) {
-    console.log(
-      "⚠️ No default Slack channel configured (SLACK_DEFAULT_CHANNEL)"
-    );
-  } else {
-    console.log(
-      `✅ Slack notifications configured to channel: ${defaultChannel}`
-    );
+  const mappingsEnv = process.env.BASECAMP_SLACK_MAPPINGS;
+
+  if (!defaultChannel && !mappingsEnv) {
+    console.log("⚠️ No Slack channels configured");
+    console.log("Set SLACK_DEFAULT_CHANNEL for a default channel");
+    console.log("Set BASECAMP_SLACK_MAPPINGS for project-specific channels");
+    return;
+  }
+
+  if (defaultChannel) {
+    console.log(`✅ Default Slack channel: ${defaultChannel}`);
+  }
+
+  if (mappingsEnv) {
+    try {
+      const mappings = JSON.parse(mappingsEnv);
+      const projectCount = Object.keys(mappings).length;
+      console.log(
+        `✅ Project-specific mappings configured for ${projectCount} project(s):`
+      );
+      Object.entries(mappings).forEach(([projectId, channelId]) => {
+        console.log(`   Project ${projectId} → Channel ${channelId}`);
+      });
+    } catch (error) {
+      console.log(
+        `⚠️ Invalid BASECAMP_SLACK_MAPPINGS format: ${error.message}`
+      );
+      console.log(
+        'Expected format: {"projectId1":"channelId1","projectId2":"channelId2"}'
+      );
+    }
   }
 };
 
