@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "build": "rm -rf node_modules/.cache && npm ci --omit=dev --no-cache",
+    "build": "echo 'Using Dockerfile for build'",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "engines": {
