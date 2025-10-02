@@ -13,11 +13,26 @@ const formatBasecampUpdate = (type, data) => {
       return {
         blocks: [
           {
+            type: "header",
+            text: {
+              type: "plain_text",
+              text: "🆕 New Task Created in Basecamp",
+              emoji: true,
+            },
+          },
+          {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `🆕 *New Task Created*\n*${data.title}*\n${
-                data.description || "No description provided"
+              text: `*Project:* ${data.project_name}`,
+            },
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `*Task:* ${data.title}\n${
+                data.description || "_No description provided_"
               }`,
             },
           },
@@ -26,39 +41,180 @@ const formatBasecampUpdate = (type, data) => {
             fields: [
               {
                 type: "mrkdwn",
-                text: `*Project:*\n${data.project_name}`,
+                text: `*Due Date:*\n${data.due_date || "_Not set_"}`,
               },
               {
                 type: "mrkdwn",
-                text: `*Due:*\n${data.due_date || "No due date"}`,
+                text: `*Created By:*\n${data.creator_name}`,
               },
             ],
           },
           {
-            type: "context",
+            type: "actions",
             elements: [
               {
-                type: "mrkdwn",
-                text: `👤 Created by ${data.creator_name} • <${data.url}|View in Basecamp>`,
+                type: "button",
+                text: {
+                  type: "plain_text",
+                  text: "View in Basecamp",
+                  emoji: true,
+                },
+                url: data.url,
+                style: "primary",
               },
             ],
+          },
+          {
+            type: "divider",
+          },
+        ],
+      };
+
+    case "todo_completed":
+      return {
+        blocks: [
+          {
+            type: "header",
+            text: {
+              type: "plain_text",
+              text: "✅ Task Completed in Basecamp",
+              emoji: true,
+            },
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `*Project:* ${data.project_name}`,
+            },
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `*Task:* ${data.title}`,
+            },
+          },
+          {
+            type: "section",
+            fields: [
+              {
+                type: "mrkdwn",
+                text: `*Completed By:*\n${
+                  data.completer_name || data.creator_name
+                }`,
+              },
+            ],
+          },
+          {
+            type: "actions",
+            elements: [
+              {
+                type: "button",
+                text: {
+                  type: "plain_text",
+                  text: "View in Basecamp",
+                  emoji: true,
+                },
+                url: data.url,
+              },
+            ],
+          },
+          {
+            type: "divider",
+          },
+        ],
+      };
+
+    case "comment_created":
+      return {
+        blocks: [
+          {
+            type: "header",
+            text: {
+              type: "plain_text",
+              text: "💬 New Comment in Basecamp",
+              emoji: true,
+            },
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `*Project:* ${data.project_name}`,
+            },
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `*On Task:* ${data.title}`,
+            },
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `*Comment:*\n${data.description || "_No content_"}`,
+            },
+          },
+          {
+            type: "section",
+            fields: [
+              {
+                type: "mrkdwn",
+                text: `*Commented By:*\n${data.creator_name}`,
+              },
+            ],
+          },
+          {
+            type: "actions",
+            elements: [
+              {
+                type: "button",
+                text: {
+                  type: "plain_text",
+                  text: "View in Basecamp",
+                  emoji: true,
+                },
+                url: data.url,
+              },
+            ],
+          },
+          {
+            type: "divider",
           },
         ],
       };
 
     default:
       return {
-        text: `Basecamp Update: ${type}\n${JSON.stringify(data, null, 2)}`,
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `*Basecamp Update:* ${type}`,
+            },
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: "```" + JSON.stringify(data, null, 2) + "```",
+            },
+          },
+        ],
       };
   }
 };
 
 // Send notification to Slack
-const sendToSlack = async (type, data) => {
+const sendToSlack = async (channelId, type, data) => {
   try {
     const message = formatBasecampUpdate(type, data);
     await slack.chat.postMessage({
-      channel: SLACK_CHANNEL,
+      channel: channelId,
       ...message,
     });
     console.log(
