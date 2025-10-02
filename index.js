@@ -940,6 +940,8 @@ app.post("/basecamp/webhook", async (req, res) => {
       url: event.recording.app_url,
       due_date: event.recording.due_on,
       completer_name: event.recording.completer?.name,
+      assignees: event.recording.assignees || [],
+      content: event.recording.content, // For comments
     };
 
     // Send to Slack based on event type
@@ -947,18 +949,6 @@ app.post("/basecamp/webhook", async (req, res) => {
       case "todo_created":
       case "todo_completed":
       case "comment_created":
-        console.log("Sending notification to Slack:", {
-          channelId,
-          type: event.kind,
-          data: {
-            title: data.title,
-            description: data.description,
-            project_name: data.project_name,
-            creator_name: data.creator_name,
-            url: data.url,
-            due_date: data.due_date,
-          },
-        });
         await sendToSlack(channelId, event.kind, data);
         break;
       default:

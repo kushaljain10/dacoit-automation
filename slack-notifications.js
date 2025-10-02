@@ -7,13 +7,19 @@ const slack = new WebClient(process.env.SLACK_BOT_TOKEN);
 const formatBasecampUpdate = (type, data) => {
   switch (type) {
     case "todo_created":
+      // Build assignees text
+      let assigneesText = "Not assigned";
+      if (data.assignees && data.assignees.length > 0) {
+        assigneesText = data.assignees.map((a) => a.name).join(", ");
+      }
+
       return {
         blocks: [
           {
             type: "header",
             text: {
               type: "plain_text",
-              text: "🆕 New Task Created in Basecamp",
+              text: "🆕 New Task Created",
               emoji: true,
             },
           },
@@ -21,16 +27,14 @@ const formatBasecampUpdate = (type, data) => {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `*Project:* ${data.project_name}`,
+              text: `*${data.title}*`,
             },
           },
           {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `*Task:* ${data.title}\n${
-                data.description || "_No description provided_"
-              }`,
+              text: data.description || "_No description provided_",
             },
           },
           {
@@ -38,11 +42,19 @@ const formatBasecampUpdate = (type, data) => {
             fields: [
               {
                 type: "mrkdwn",
-                text: `*Due Date:*\n${data.due_date || "_Not set_"}`,
+                text: `*Project:*\n${data.project_name}`,
               },
               {
                 type: "mrkdwn",
-                text: `*Created By:*\n${data.creator_name}`,
+                text: `*Due Date:*\n${data.due_date || "No due date"}`,
+              },
+              {
+                type: "mrkdwn",
+                text: `*Assigned to:*\n${assigneesText}`,
+              },
+              {
+                type: "mrkdwn",
+                text: `*Created by:*\n${data.creator_name}`,
               },
             ],
           },
@@ -61,9 +73,6 @@ const formatBasecampUpdate = (type, data) => {
               },
             ],
           },
-          {
-            type: "divider",
-          },
         ],
       };
 
@@ -74,7 +83,7 @@ const formatBasecampUpdate = (type, data) => {
             type: "header",
             text: {
               type: "plain_text",
-              text: "✅ Task Completed in Basecamp",
+              text: "✅ Task Completed",
               emoji: true,
             },
           },
@@ -82,14 +91,7 @@ const formatBasecampUpdate = (type, data) => {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `*Project:* ${data.project_name}`,
-            },
-          },
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `*Task:* ${data.title}`,
+              text: `*${data.title}*`,
             },
           },
           {
@@ -97,9 +99,11 @@ const formatBasecampUpdate = (type, data) => {
             fields: [
               {
                 type: "mrkdwn",
-                text: `*Completed By:*\n${
-                  data.completer_name || data.creator_name
-                }`,
+                text: `*Project:*\n${data.project_name}`,
+              },
+              {
+                type: "mrkdwn",
+                text: `*Completed by:*\n${data.completer_name}`,
               },
             ],
           },
@@ -116,9 +120,6 @@ const formatBasecampUpdate = (type, data) => {
                 url: data.url,
               },
             ],
-          },
-          {
-            type: "divider",
           },
         ],
       };
@@ -130,7 +131,7 @@ const formatBasecampUpdate = (type, data) => {
             type: "header",
             text: {
               type: "plain_text",
-              text: "💬 New Comment in Basecamp",
+              text: "💬 New Comment",
               emoji: true,
             },
           },
@@ -138,21 +139,14 @@ const formatBasecampUpdate = (type, data) => {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `*Project:* ${data.project_name}`,
+              text: `*On task:* ${data.title}`,
             },
           },
           {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `*On Task:* ${data.title}`,
-            },
-          },
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `*Comment:*\n${data.description || "_No content_"}`,
+              text: data.content || "_No comment text_",
             },
           },
           {
@@ -160,7 +154,11 @@ const formatBasecampUpdate = (type, data) => {
             fields: [
               {
                 type: "mrkdwn",
-                text: `*Commented By:*\n${data.creator_name}`,
+                text: `*Project:*\n${data.project_name}`,
+              },
+              {
+                type: "mrkdwn",
+                text: `*Commented by:*\n${data.creator_name}`,
               },
             ],
           },
@@ -178,30 +176,12 @@ const formatBasecampUpdate = (type, data) => {
               },
             ],
           },
-          {
-            type: "divider",
-          },
         ],
       };
 
     default:
       return {
-        blocks: [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `*Basecamp Update:* ${type}`,
-            },
-          },
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: "```" + JSON.stringify(data, null, 2) + "```",
-            },
-          },
-        ],
+        text: `Basecamp Update: ${type}\n${JSON.stringify(data, null, 2)}`,
       };
   }
 };
