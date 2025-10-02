@@ -473,17 +473,19 @@ const createTodo = async (
 ) => {
   const { access, accountId } = store.get(String(ctx.from.id));
   const payload = {
-    content: title,
-    description: description || undefined,
-    // Use assignee_ids as array of IDs (from Basecamp 3 API docs)
-    assignee_ids: assigneeId ? [assigneeId] : [],
-    due_on: dueOn || undefined, // YYYY-MM-DD
+    todo: {
+      content: title,
+      description: description || undefined,
+      // Use assignee_ids as array of IDs (from Basecamp 3 API docs)
+      assignee_ids: assigneeId ? [assigneeId] : [],
+      due_on: dueOn || undefined, // YYYY-MM-DD
+    },
   };
 
   console.log(`Creating todo with payload:`, {
-    content: payload.content,
-    assignee_ids: payload.assignee_ids,
-    due_on: payload.due_on,
+    content: payload.todo.content,
+    assignee_ids: payload.todo.assignee_ids,
+    due_on: payload.todo.due_on,
   });
 
   const url = `https://3.basecampapi.com/${accountId}/buckets/${projectId}/todolists/${todoListId}/todos.json`;
