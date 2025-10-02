@@ -60,13 +60,13 @@ const formatBasecampUpdate = (type, data) => {
               text: `*${data.title}*`,
             },
           },
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: data.description || "_No description provided_",
-            },
-          },
+          // {
+          //   type: "section",
+          //   text: {
+          //     type: "mrkdwn",
+          //     text: data.description || "_No description provided_",
+          //   },
+          // },
           {
             type: "section",
             fields: [
