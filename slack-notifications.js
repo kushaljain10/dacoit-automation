@@ -7,7 +7,7 @@ const slack = new WebClient(process.env.SLACK_BOT_TOKEN);
 const formatBasecampUpdate = (type, data) => {
   switch (type) {
     case "todo_created":
-      // Build assignees text
+      // Build assignees text with Slack mentions
       let assigneesText = "Not assigned";
 
       if (
@@ -16,8 +16,17 @@ const formatBasecampUpdate = (type, data) => {
         data.assignees.length > 0
       ) {
         assigneesText = data.assignees
-          .map((a) => a.name || a.email_address || "Unknown")
+          .map((a) => {
+            // If we have a slack_user_id, use Slack mention format
+            if (a.slack_user_id) {
+              return `<@${a.slack_user_id}>`;
+            }
+            return a.name || a.email_address || "Unknown";
+          })
           .join(", ");
+      } else if (data.slack_user_id) {
+        // Use slack_user_id from webhook data if available
+        assigneesText = `<@${data.slack_user_id}>`;
       }
 
       console.log("Final assignees text for Slack:", assigneesText);

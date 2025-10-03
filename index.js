@@ -120,12 +120,14 @@ const askTaskDescription = async (ctx) =>
   );
 
 // Helper function to match and process task data
-const processTaskData = (taskData, context) => {
+const processTaskData = async (taskData, context, access, accountId) => {
   const result = {
     title: taskData.title,
     description: taskData.description,
     projectId: null,
     assigneeId: null,
+    assigneeEmail: null,
+    slackUserId: null,
     dueOn: null,
   };
 
@@ -144,29 +146,51 @@ const processTaskData = (taskData, context) => {
     }
   }
 
-  // Try to match assignee names to person IDs
+  // Try to match assignee names to person
   if (
     taskData.assignee_names &&
     taskData.assignee_names.length > 0 &&
     context.people.length > 0
   ) {
-    const matchedPeople = [];
-    taskData.assignee_names.forEach((name) => {
-      const matchedPerson = context.people.find(
-        (p) =>
-          p.name.toLowerCase() === name.toLowerCase() ||
-          p.name.toLowerCase().includes(name.toLowerCase()) ||
-          name.toLowerCase().includes(p.name.toLowerCase())
+    const name = taskData.assignee_names[0]; // Use first assignee
+    const matchedPerson = context.people.find(
+      (p) =>
+        p.name.toLowerCase() === name.toLowerCase() ||
+        p.name.toLowerCase().includes(name.toLowerCase()) ||
+        name.toLowerCase().includes(p.name.toLowerCase())
+    );
+
+    if (matchedPerson) {
+      result.assigneeEmail = matchedPerson.email;
+      result.slackUserId = matchedPerson.slack_user_id;
+
+      console.log(
+        `AI matched assignee: ${matchedPerson.name} (${matchedPerson.email})`
       );
-      if (matchedPerson) {
-        matchedPeople.push(matchedPerson.id);
-        console.log(
-          `AI matched assignee: ${matchedPerson.name} (${matchedPerson.id})`
+
+      // Now find the Basecamp user ID by email
+      try {
+        const { data: basecampPeople } = await bc(access).get(
+          `https://3.basecampapi.com/${accountId}/people.json`
+        );
+        const basecampPerson = basecampPeople.find(
+          (bp) =>
+            bp.email_address.toLowerCase() === matchedPerson.email.toLowerCase()
+        );
+        if (basecampPerson) {
+          result.assigneeId = basecampPerson.id;
+          console.log(`Matched to Basecamp user ID: ${basecampPerson.id}`);
+        } else {
+          console.log(
+            `No Basecamp user found with email: ${matchedPerson.email}`
+          );
+        }
+      } catch (error) {
+        console.error(
+          "Error fetching Basecamp people for email match:",
+          error.message
         );
       }
-    });
-    if (matchedPeople.length > 0) {
-      result.assigneeId = matchedPeople[0]; // Use first matched person
     }
   }
 
@@ -671,19 +695,48 @@ bot.on("text", requireAuth, async (ctx) => {
         );
         context.projects = projects.map((p) => ({ id: p.id, name: p.name }));
 
-        // Fetch people
-        const { data: people } = await bc(access).get(
-          `https://3.basecampapi.com/${accountId}/people.json`
-        );
-        context.people = people.map((p) => ({
-          id: p.id,
-          name: p.name,
-          email: p.email_address,
-        }));
+        // Use custom people list from environment variable if available
+        if (process.env.CUSTOM_PEOPLE_LIST) {
+          try {
+            const customPeople = JSON.parse(process.env.CUSTOM_PEOPLE_LIST);
+            context.people = customPeople.map((p) => ({
+              name: p.name,
+              email: p.email,
+              slack_user_id: p.slack_user_id,
+            }));
+            console.log("Using custom people list from environment");
+          } catch (parseError) {
+            console.error(
+              "Error parsing CUSTOM_PEOPLE_LIST:",
+              parseError.message
+            );
+            console.log("Falling back to Basecamp people list");
+            // Fallback to Basecamp people
+            const { data: people } = await bc(access).get(
+              `https://3.basecampapi.com/${accountId}/people.json`
+            );
+            context.people = people.map((p) => ({
+              id: p.id,
+              name: p.name,
+              email: p.email_address,
+            }));
+          }
+        } else {
+          // Fetch people from Basecamp
+          const { data: people } = await bc(access).get(
+            `https://3.basecampapi.com/${accountId}/people.json`
+          );
+          context.people = people.map((p) => ({
+            id: p.id,
+            name: p.name,
+            email: p.email_address,
+          }));
+        }
 
         console.log("Context for AI:", {
           projects_count: context.projects.length,
           people_count: context.people.length,
+          using_custom_people: !!process.env.CUSTOM_PEOPLE_LIST,
         });
       } catch (contextError) {
         console.error("Error fetching context for AI:", contextError.message);
@@ -709,7 +762,12 @@ bot.on("text", requireAuth, async (ctx) => {
         // Process each task and create them directly
         const results = [];
         for (const taskData of aiResult.tasks) {
-          const processedTask = processTaskData(taskData, context);
+          const processedTask = await processTaskData(
+            taskData,
+            context,
+            access,
+            accountId
+          );
 
           // Need to have at least a project to create the task
           if (!processedTask.projectId) {
@@ -790,11 +848,18 @@ bot.on("text", requireAuth, async (ctx) => {
       }
 
       // Single task - use existing flow
-      const processedTask = processTaskData(aiResult, context);
+      const processedTask = await processTaskData(
+        aiResult,
+        context,
+        access,
+        accountId
+      );
       f.selections.title = processedTask.title;
       f.selections.description = processedTask.description;
       f.selections.projectId = processedTask.projectId;
       f.selections.assigneeId = processedTask.assigneeId;
+      f.selections.assigneeEmail = processedTask.assigneeEmail;
+      f.selections.slackUserId = processedTask.slackUserId;
       f.selections.dueOn = processedTask.dueOn;
 
       // Store AI-extracted information
@@ -1250,6 +1315,33 @@ app.post("/basecamp/webhook", async (req, res) => {
       }
     }
 
+    // Enrich assignees with slack_user_id if custom people list is configured
+    let enrichedAssignees = todoDetails?.assignees || [];
+    if (process.env.CUSTOM_PEOPLE_LIST && enrichedAssignees.length > 0) {
+      try {
+        const customPeople = JSON.parse(process.env.CUSTOM_PEOPLE_LIST);
+        enrichedAssignees = enrichedAssignees.map((assignee) => {
+          const customPerson = customPeople.find(
+            (cp) =>
+              cp.email.toLowerCase() === assignee.email_address?.toLowerCase()
+          );
+          return {
+            ...assignee,
+            slack_user_id: customPerson?.slack_user_id || null,
+          };
+        });
+        console.log(
+          "Enriched assignees with Slack user IDs:",
+          enrichedAssignees
+        );
+      } catch (error) {
+        console.error(
+          "Error enriching assignees with Slack IDs:",
+          error.message
+        );
+      }
+    }
+
     // Format the event data
     const data = {
       title: todoDetails?.title || event.recording.title,
@@ -1262,7 +1354,7 @@ app.post("/basecamp/webhook", async (req, res) => {
       url: event.recording.app_url,
       due_date: todoDetails?.due_on || event.recording.due_on || null,
       completer_name: event.recording.completer?.name,
-      assignees: todoDetails?.assignees || [],
+      assignees: enrichedAssignees,
       content: event.recording.content, // For comments
     };
 

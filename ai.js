@@ -118,6 +118,16 @@ User message: "${message.replace(/"/g, '\\"')}"`;
   const maxRetries = 3;
   const baseDelay = 1000; // 1 second
 
+  // Log what we're sending to AI
+  console.log("=== AI Request ===");
+  console.log("User message:", message);
+  console.log("Context provided:", {
+    projects_count: context?.projects?.length || 0,
+    people_count: context?.people?.length || 0,
+  });
+  console.log("Full prompt:", prompt);
+  console.log("==================");
+
   try {
     const response = await axios.post(
       OPENROUTER_API_URL,
