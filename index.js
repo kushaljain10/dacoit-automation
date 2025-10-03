@@ -507,7 +507,7 @@ const createBatchTasks = async (ctx, processedTasks, basecampPeople) => {
       assigneeEmail: processedTask.assigneeEmail,
       dueOn: processedTask.dueOn,
     });
-    
+
     // Skip tasks without project
     if (!processedTask.projectId) {
       results.push({
@@ -529,24 +529,43 @@ const createBatchTasks = async (ctx, processedTasks, basecampPeople) => {
           const { data: projectPeople } = await bc(access).get(
             `https://3.basecampapi.com/${accountId}/projects/${processedTask.projectId}/people.json`
           );
-          
-          console.log(`\n🔍 Verifying assignee ${processedTask.assigneeId} is in project ${processedTask.projectId}`);
-          console.log(`Project people IDs:`, projectPeople.map(p => p.id));
-          
-          const isInProject = projectPeople.some(p => p.id === processedTask.assigneeId);
-          
+
+          console.log(
+            `\n🔍 Verifying assignee ${processedTask.assigneeId} is in project ${processedTask.projectId}`
+          );
+          console.log(
+            `Project people IDs:`,
+            projectPeople.map((p) => p.id)
+          );
+
+          const isInProject = projectPeople.some(
+            (p) => p.id === processedTask.assigneeId
+          );
+
           if (!isInProject) {
-            console.error(`\n⚠️ WARNING: Assignee ID ${processedTask.assigneeId} is NOT part of project ${processedTask.projectId}!`);
+            console.error(
+              `\n⚠️ WARNING: Assignee ID ${processedTask.assigneeId} is NOT part of project ${processedTask.projectId}!`
+            );
             console.error(`This task will be created WITHOUT an assignee.`);
-            console.error(`Available people in project:`, projectPeople.map(p => `${p.name} (ID: ${p.id})`));
+            console.error(
+              `Available people in project:`,
+              projectPeople.map((p) => `${p.name} (ID: ${p.id})`)
+            );
             // Set assigneeId to null so task gets created without assignee
             processedTask.assigneeId = null;
           } else {
-            const assigneePerson = projectPeople.find(p => p.id === processedTask.assigneeId);
-            console.log(`✅ Assignee verified: ${assigneePerson.name} (ID: ${assigneePerson.id}) is in the project`);
+            const assigneePerson = projectPeople.find(
+              (p) => p.id === processedTask.assigneeId
+            );
+            console.log(
+              `✅ Assignee verified: ${assigneePerson.name} (ID: ${assigneePerson.id}) is in the project`
+            );
           }
         } catch (verifyError) {
-          console.error(`Error verifying assignee in project:`, verifyError.message);
+          console.error(
+            `Error verifying assignee in project:`,
+            verifyError.message
+          );
           // Continue anyway - let Basecamp handle it
         }
       }
@@ -746,7 +765,7 @@ const createTodo = async (
   { projectId, todoListId, title, description, assigneeId, dueOn }
 ) => {
   const { access, accountId } = store.get(String(ctx.from.id));
-  
+
   console.log(`\n🔵 createTodo called with:`, {
     title,
     projectId,
@@ -755,7 +774,7 @@ const createTodo = async (
     assigneeId_type: typeof assigneeId,
     dueOn,
   });
-  
+
   const payload = {
     todo: {
       content: title,
@@ -790,7 +809,7 @@ const createTodo = async (
     status: data.status,
     app_url: data.app_url,
   });
-  
+
   // Verify assignment
   if (assigneeId && (!data.assignees || data.assignees.length === 0)) {
     console.error(`\n❌ ASSIGNMENT FAILED!`);
@@ -801,7 +820,10 @@ const createTodo = async (
     console.error(`   - User not part of the project`);
     console.error(`   - Permission issue`);
   } else if (assigneeId && data.assignees && data.assignees.length > 0) {
-    console.log(`✅ Task successfully assigned to:`, data.assignees.map(a => `${a.name} (ID: ${a.id})`));
+    console.log(
+      `✅ Task successfully assigned to:`,
+      data.assignees.map((a) => `${a.name} (ID: ${a.id})`)
+    );
   }
 
   // Log the full response to see what fields are available
