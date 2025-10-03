@@ -201,6 +201,20 @@ const processTaskData = async (
           basecampPeople.map((bp) => bp.email_address)
         );
 
+        console.log(`\n🔍 DETAILED EMAIL MATCHING:`);
+        console.log(`   Looking for: "${matchedPerson.email.toLowerCase()}"`);
+        console.log(`   In Basecamp emails:`);
+        basecampPeople.forEach((bp, idx) => {
+          const match =
+            bp.email_address.toLowerCase() ===
+            matchedPerson.email.toLowerCase();
+          console.log(
+            `   ${idx + 1}. "${bp.email_address.toLowerCase()}" ${
+              match ? "✅ MATCH!" : ""
+            }`
+          );
+        });
+
         const basecampPerson = basecampPeople.find(
           (bp) =>
             bp.email_address.toLowerCase() === matchedPerson.email.toLowerCase()
@@ -208,12 +222,17 @@ const processTaskData = async (
         if (basecampPerson) {
           result.assigneeId = basecampPerson.id;
           console.log(
-            `✅ Matched to Basecamp user ID: ${basecampPerson.id} (${basecampPerson.name})`
+            `\n✅ EMAIL MATCHED! Basecamp user ID: ${basecampPerson.id} (${basecampPerson.name})`
           );
+          console.log(`   assigneeEmail set to: ${result.assigneeEmail}`);
+          console.log(`   assigneeId set to: ${result.assigneeId}`);
         } else {
-          console.log(
-            `❌ No Basecamp user found with email: ${matchedPerson.email}`
+          console.error(
+            `\n❌ EMAIL NOT FOUND! No Basecamp user with email: "${matchedPerson.email}"`
           );
+          console.error(`   assigneeEmail: ${result.assigneeEmail}`);
+          console.error(`   assigneeId: ${result.assigneeId || "NOT SET"}`);
+          console.error(`   THE TASK WILL BE CREATED WITHOUT AN ASSIGNEE!`);
         }
       } catch (error) {
         console.error(
@@ -240,6 +259,28 @@ const processTaskData = async (
       result.dueOn = parsedDue;
       console.log(`AI extracted due date: ${taskData.due_date} → ${parsedDue}`);
     }
+  }
+
+  // Final summary of what was extracted/matched
+  console.log(`\n📋 FINAL TASK DATA:`);
+  console.log(`   Title: ${result.title}`);
+  console.log(`   Project ID: ${result.projectId || "NOT SET"}`);
+  console.log(`   Assignee Email: ${result.assigneeEmail || "NOT SET"}`);
+  console.log(
+    `   Assignee ID (Basecamp): ${result.assigneeId || "NOT SET ⚠️"}`
+  );
+  console.log(`   Due Date: ${result.dueOn || "NOT SET"}`);
+
+  if (result.assigneeEmail && !result.assigneeId) {
+    console.error(
+      `\n⚠️⚠️⚠️ CRITICAL ISSUE: Email found but Basecamp ID missing!`
+    );
+    console.error(
+      `   This means the email in CUSTOM_PEOPLE_LIST doesn't match any Basecamp user`
+    );
+    console.error(
+      `   Check for typos or case differences in the email address`
+    );
   }
 
   return result;
@@ -1872,6 +1913,81 @@ app.get("/test", (req, res) => {
     ),
     database_connected: store && store.db !== null,
   });
+});
+
+// Debug endpoint to compare CUSTOM_PEOPLE_LIST with Basecamp
+app.get("/debug/people-matching", async (req, res) => {
+  try {
+    const users = store.getAllUsers();
+    if (!users.length) {
+      return res.status(400).json({ error: "No authenticated users found" });
+    }
+
+    const auth = store.get(users[0]);
+    if (!auth) {
+      return res.status(400).json({ error: "No valid authentication found" });
+    }
+
+    // Fetch Basecamp people
+    const { data: basecampPeople } = await bc(auth.access).get(
+      `https://3.basecampapi.com/${auth.accountId}/people.json`
+    );
+
+    let customPeople = [];
+    let customPeopleError = null;
+
+    if (process.env.CUSTOM_PEOPLE_LIST) {
+      try {
+        customPeople = JSON.parse(process.env.CUSTOM_PEOPLE_LIST);
+      } catch (error) {
+        customPeopleError = error.message;
+      }
+    }
+
+    // Compare and find matches/mismatches
+    const comparison = customPeople.map((custom) => {
+      const basecampMatch = basecampPeople.find(
+        (bp) => bp.email_address.toLowerCase() === custom.email.toLowerCase()
+      );
+
+      return {
+        custom_name: custom.name,
+        custom_email: custom.email,
+        custom_email_lowercase: custom.email.toLowerCase(),
+        slack_user_id: custom.slack_user_id,
+        basecamp_id: basecampMatch?.id || null,
+        basecamp_name: basecampMatch?.name || null,
+        basecamp_email: basecampMatch?.email_address || null,
+        status: basecampMatch ? "✅ MATCHED" : "❌ NO MATCH",
+      };
+    });
+
+    res.json({
+      status: "ok",
+      custom_people_count: customPeople.length,
+      basecamp_people_count: basecampPeople.length,
+      custom_people_error: customPeopleError,
+      comparison: comparison,
+      unmatched_custom: comparison
+        .filter((c) => !c.basecamp_id)
+        .map((c) => c.custom_email),
+      all_basecamp_emails: basecampPeople.map((bp) => bp.email_address),
+      timestamp: new Date().toISOString(),
+      help: {
+        message:
+          "This shows how your CUSTOM_PEOPLE_LIST matches with actual Basecamp users",
+        note: "Email matching is case-insensitive",
+        action:
+          "Fix any unmatched emails in your CUSTOM_PEOPLE_LIST environment variable",
+      },
+    });
+  } catch (error) {
+    console.error("Error in people matching debug:", error);
+    res.status(500).json({
+      error: "Failed to compare people lists",
+      message: error.message,
+    });
+  }
 });
 
 // Check authentication status
