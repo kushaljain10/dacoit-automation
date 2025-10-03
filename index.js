@@ -119,6 +119,69 @@ const askTaskDescription = async (ctx) =>
     "What's the task? (Describe the work to be done, client request, or copy/paste any message)"
   );
 
+// Helper function to match and process task data
+const processTaskData = (taskData, context) => {
+  const result = {
+    title: taskData.title,
+    description: taskData.description,
+    projectId: null,
+    assigneeId: null,
+    dueOn: null,
+  };
+
+  // Try to match project name to project ID
+  if (taskData.project_name && context.projects.length > 0) {
+    const matchedProject = context.projects.find(
+      (p) =>
+        p.name.toLowerCase() === taskData.project_name.toLowerCase() ||
+        p.name.toLowerCase().includes(taskData.project_name.toLowerCase())
+    );
+    if (matchedProject) {
+      result.projectId = matchedProject.id;
+      console.log(
+        `AI matched project: ${matchedProject.name} (${matchedProject.id})`
+      );
+    }
+  }
+
+  // Try to match assignee names to person IDs
+  if (
+    taskData.assignee_names &&
+    taskData.assignee_names.length > 0 &&
+    context.people.length > 0
+  ) {
+    const matchedPeople = [];
+    taskData.assignee_names.forEach((name) => {
+      const matchedPerson = context.people.find(
+        (p) =>
+          p.name.toLowerCase() === name.toLowerCase() ||
+          p.name.toLowerCase().includes(name.toLowerCase()) ||
+          name.toLowerCase().includes(p.name.toLowerCase())
+      );
+      if (matchedPerson) {
+        matchedPeople.push(matchedPerson.id);
+        console.log(
+          `AI matched assignee: ${matchedPerson.name} (${matchedPerson.id})`
+        );
+      }
+    });
+    if (matchedPeople.length > 0) {
+      result.assigneeId = matchedPeople[0]; // Use first matched person
+    }
+  }
+
+  // Parse and store due date if extracted
+  if (taskData.due_date) {
+    const parsedDue = parseDue(taskData.due_date);
+    if (parsedDue) {
+      result.dueOn = parsedDue;
+      console.log(`AI extracted due date: ${taskData.due_date} → ${parsedDue}`);
+    }
+  }
+
+  return result;
+};
+
 const showTaskConfirmation = async (ctx, title, description) => {
   const confirmationText = `🤖 **AI Processed Task:**
 
@@ -628,8 +691,101 @@ bot.on("text", requireAuth, async (ctx) => {
       }
 
       const aiResult = await processTaskWithAI(text, context);
-      f.selections.title = aiResult.title;
-      f.selections.description = aiResult.description;
+
+      // Check if it's multiple tasks
+      if (aiResult.is_multiple && aiResult.tasks) {
+        console.log(`AI detected ${aiResult.tasks.length} tasks`);
+
+        // Process each task and create them directly
+        const results = [];
+        for (const taskData of aiResult.tasks) {
+          const processedTask = processTaskData(taskData, context);
+
+          // Need to have at least a project to create the task
+          if (!processedTask.projectId) {
+            results.push({
+              success: false,
+              title: processedTask.title,
+              error: "No project matched",
+            });
+            continue;
+          }
+
+          try {
+            // Get todo list for the project
+            const list = await chooseDefaultTodoList(
+              ctx,
+              processedTask.projectId
+            );
+
+            // Create the task
+            const todo = await createTodo(ctx, {
+              projectId: processedTask.projectId,
+              todoListId: list.id,
+              title: processedTask.title,
+              description: processedTask.description,
+              assigneeId: processedTask.assigneeId,
+              dueOn: processedTask.dueOn,
+            });
+
+            results.push({
+              success: true,
+              title: processedTask.title,
+              url: todo.app_url,
+            });
+          } catch (error) {
+            console.error(
+              `Error creating task "${processedTask.title}":`,
+              error.message
+            );
+            results.push({
+              success: false,
+              title: processedTask.title,
+              error: error.message,
+            });
+          }
+        }
+
+        // Delete the processing message
+        try {
+          await ctx.deleteMessage(processingMessage.message_id);
+        } catch (deleteError) {
+          console.log(
+            "Could not delete processing message:",
+            deleteError.message
+          );
+        }
+
+        // Send summary of created tasks
+        const successCount = results.filter((r) => r.success).length;
+        const failCount = results.filter((r) => !r.success).length;
+
+        let summaryText = `✅ **Batch Task Creation Complete**\n\n`;
+        summaryText += `📊 Created ${successCount} task(s), ${failCount} failed\n\n`;
+
+        results.forEach((result, index) => {
+          if (result.success) {
+            summaryText += `✅ ${index + 1}. ${result.title}\n   ${
+              result.url
+            }\n\n`;
+          } else {
+            summaryText += `❌ ${index + 1}. ${result.title}\n   Error: ${
+              result.error
+            }\n\n`;
+          }
+        });
+
+        await resetFlow(ctx);
+        return ctx.reply(summaryText, { parse_mode: "Markdown" });
+      }
+
+      // Single task - use existing flow
+      const processedTask = processTaskData(aiResult, context);
+      f.selections.title = processedTask.title;
+      f.selections.description = processedTask.description;
+      f.selections.projectId = processedTask.projectId;
+      f.selections.assigneeId = processedTask.assigneeId;
+      f.selections.dueOn = processedTask.dueOn;
 
       // Store AI-extracted information
       f.selections.ai_extracted = {
@@ -637,58 +793,6 @@ bot.on("text", requireAuth, async (ctx) => {
         assignee_names: aiResult.assignee_names,
         due_date: aiResult.due_date,
       };
-
-      // Try to match project name to project ID
-      if (aiResult.project_name && context.projects.length > 0) {
-        const matchedProject = context.projects.find(
-          (p) =>
-            p.name.toLowerCase() === aiResult.project_name.toLowerCase() ||
-            p.name.toLowerCase().includes(aiResult.project_name.toLowerCase())
-        );
-        if (matchedProject) {
-          f.selections.projectId = matchedProject.id;
-          console.log(
-            `AI matched project: ${matchedProject.name} (${matchedProject.id})`
-          );
-        }
-      }
-
-      // Try to match assignee names to person IDs
-      if (
-        aiResult.assignee_names &&
-        aiResult.assignee_names.length > 0 &&
-        context.people.length > 0
-      ) {
-        const matchedPeople = [];
-        aiResult.assignee_names.forEach((name) => {
-          const matchedPerson = context.people.find(
-            (p) =>
-              p.name.toLowerCase() === name.toLowerCase() ||
-              p.name.toLowerCase().includes(name.toLowerCase()) ||
-              name.toLowerCase().includes(p.name.toLowerCase())
-          );
-          if (matchedPerson) {
-            matchedPeople.push(matchedPerson.id);
-            console.log(
-              `AI matched assignee: ${matchedPerson.name} (${matchedPerson.id})`
-            );
-          }
-        });
-        if (matchedPeople.length > 0) {
-          f.selections.assigneeId = matchedPeople[0]; // Use first matched person
-        }
-      }
-
-      // Parse and store due date if extracted
-      if (aiResult.due_date) {
-        const parsedDue = parseDue(aiResult.due_date);
-        if (parsedDue) {
-          f.selections.dueOn = parsedDue;
-          console.log(
-            `AI extracted due date: ${aiResult.due_date} → ${parsedDue}`
-          );
-        }
-      }
 
       // Delete the processing message after successful AI processing
       try {

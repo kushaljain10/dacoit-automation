@@ -7,22 +7,23 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 
 // Shared AI processing function with context extraction
 const processTaskWithAI = async (message, context = null, retryCount = 0) => {
-  let prompt = `You are a task management assistant. Given a user message (which could be from a client or describing work to be done), extract and create:
+  let prompt = `You are a task management assistant. Analyze the user message to determine if it contains:
+- Single task: One task to be created
+- Multiple tasks: Multiple tasks, possibly with different assignees and projects
 
+For SINGLE TASK, extract:
 1. A clear, actionable task title (max 80 characters)
-2. A detailed description that includes all relevant information
-3. Extract project name if mentioned (match against available projects)
-4. Extract assignee names if mentioned (match against available people)
-5. Extract due date if mentioned (in any natural format)
+2. A detailed description
+3. Project name if mentioned (match against available projects)
+4. Assignee names if mentioned (match against available people)
+5. Due date if mentioned
 
-The message could be:
-- A client request 
-- Work description
-- Bug report
-- Feature request
-- General task description
+For MULTIPLE TASKS, the format will be like:
+"Assignee Name - Task 1 for Project A. Task 2 for Project B."
 
-IMPORTANT: Return ONLY a valid JSON object without any markdown formatting, code blocks, or backticks. No \`\`\`json or \`\`\` - just the raw JSON.`;
+Extract each task separately with its assignee and project.
+
+IMPORTANT: Return ONLY a valid JSON object without any markdown formatting, code blocks, or backticks.`;
 
   // Add context if available
   if (context) {
@@ -39,13 +40,35 @@ IMPORTANT: Return ONLY a valid JSON object without any markdown formatting, code
     }
   }
 
-  prompt += `\n\nReturn format:
+  prompt += `\n\nReturn format for SINGLE task:
 {
-  "title": "Clear task title here",
-  "description": "Detailed description with all relevant context",
-  "project_name": "Matched project name or null",
-  "assignee_names": ["Matched person name"] or [],
-  "due_date": "Extracted date in natural format or null"
+  "is_multiple": false,
+  "title": "Task title",
+  "description": "Task description",
+  "project_name": "Project name or null",
+  "assignee_names": ["Person name"] or [],
+  "due_date": "Date or null"
+}
+
+Return format for MULTIPLE tasks:
+{
+  "is_multiple": true,
+  "tasks": [
+    {
+      "title": "Task 1 title",
+      "description": "Task 1 description",
+      "project_name": "Project name or null",
+      "assignee_names": ["Person name"],
+      "due_date": "Date or null"
+    },
+    {
+      "title": "Task 2 title",
+      "description": "Task 2 description",
+      "project_name": "Project name or null",
+      "assignee_names": ["Person name"],
+      "due_date": "Date or null"
+    }
+  ]
 }
 
 User message: "${message.replace(/"/g, '\\"')}"`;
@@ -89,12 +112,35 @@ User message: "${message.replace(/"/g, '\\"')}"`;
     // Parse the JSON response
     const parsedResponse = JSON.parse(aiResponse);
 
-    // Validate the response has required fields
+    // Check if it's multiple tasks
+    if (parsedResponse.is_multiple && parsedResponse.tasks) {
+      // Validate each task has required fields
+      const validTasks = parsedResponse.tasks.filter(
+        (task) => task.title && task.description
+      );
+      if (validTasks.length === 0) {
+        throw new Error("AI response has no valid tasks");
+      }
+
+      return {
+        is_multiple: true,
+        tasks: validTasks.map((task) => ({
+          title: task.title,
+          description: task.description,
+          project_name: task.project_name || null,
+          assignee_names: task.assignee_names || [],
+          due_date: task.due_date || null,
+        })),
+      };
+    }
+
+    // Single task - validate required fields
     if (!parsedResponse.title || !parsedResponse.description) {
       throw new Error("AI response missing required fields");
     }
 
     return {
+      is_multiple: false,
       title: parsedResponse.title,
       description: parsedResponse.description,
       project_name: parsedResponse.project_name || null,
@@ -126,6 +172,7 @@ User message: "${message.replace(/"/g, '\\"')}"`;
     // If it's not a rate limit error or we've exceeded retries, fall back
     console.log("Falling back to simple text processing");
     return {
+      is_multiple: false,
       title: message.length > 80 ? message.substring(0, 77) + "..." : message,
       description: message,
       project_name: null,
