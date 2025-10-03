@@ -463,6 +463,116 @@ const buildAssigneeKeyboard = async (ctx, people, page, isAccountWide) => {
 const askDueDate = async (ctx) =>
   ctx.reply('Due date? (e.g. 2025-10-12 or 12-10-2025 or "in 3 days")');
 
+// Helper functions for batch task processing
+const askBatchTaskInfo = async (ctx) => {
+  const f = ctx.session.flow;
+  const needingInfo =
+    f.selections.batchTasksNeedingInfo[f.selections.currentBatchTaskIndex];
+  const task = needingInfo.task;
+
+  // Store what we're asking for
+  f.selections.currentBatchTaskQuestion = needingInfo.needsProject
+    ? "project"
+    : "dueDate";
+
+  if (needingInfo.needsProject) {
+    await ctx.reply(
+      `📋 **Task ${needingInfo.index + 1}:** ${
+        task.title
+      }\n\nProject not found. Please select a project:`,
+      { parse_mode: "Markdown" }
+    );
+    f.step = 6; // Batch project selection
+    return askProject(ctx);
+  } else if (needingInfo.needsDueDate) {
+    await ctx.reply(
+      `📋 **Task ${needingInfo.index + 1}:** ${
+        task.title
+      }\n\nDue date? (e.g. 2025-10-12 or "in 3 days", or type "skip" to skip)`,
+      { parse_mode: "Markdown" }
+    );
+    f.step = 7; // Batch due date input
+    return;
+  }
+};
+
+const createBatchTasks = async (ctx, processedTasks, basecampPeople) => {
+  const results = [];
+
+  for (const processedTask of processedTasks) {
+    // Skip tasks without project
+    if (!processedTask.projectId) {
+      results.push({
+        success: false,
+        title: processedTask.title,
+        error: "No project specified",
+      });
+      continue;
+    }
+
+    try {
+      // Get todo list for the project
+      const list = await chooseDefaultTodoList(ctx, processedTask.projectId);
+
+      // Create the task
+      const todo = await createTodo(ctx, {
+        projectId: processedTask.projectId,
+        todoListId: list.id,
+        title: processedTask.title,
+        description: processedTask.description,
+        assigneeId: processedTask.assigneeId,
+        dueOn: processedTask.dueOn,
+      });
+
+      results.push({
+        success: true,
+        title: processedTask.title,
+        url: todo.app_url,
+        assigneeEmail: processedTask.assigneeEmail,
+        assigneeId: processedTask.assigneeId,
+      });
+    } catch (error) {
+      console.error(
+        `Error creating task "${processedTask.title}":`,
+        error.message
+      );
+      results.push({
+        success: false,
+        title: processedTask.title,
+        error: error.message,
+      });
+    }
+  }
+
+  return results;
+};
+
+const sendBatchTaskSummary = async (ctx, results) => {
+  const successCount = results.filter((r) => r.success).length;
+  const failCount = results.filter((r) => !r.success).length;
+
+  let summaryText = `✅ **Batch Task Creation Complete**\n\n`;
+  summaryText += `📊 Created ${successCount} task(s), ${failCount} failed\n\n`;
+
+  results.forEach((result, index) => {
+    if (result.success) {
+      summaryText += `✅ ${index + 1}. ${result.title}\n   ${result.url}`;
+      if (result.assigneeEmail) {
+        summaryText += `\n   👤 Assigned to: ${result.assigneeEmail}`;
+      } else {
+        summaryText += `\n   ⚠️ No assignee`;
+      }
+      summaryText += `\n\n`;
+    } else {
+      summaryText += `❌ ${index + 1}. ${result.title}\n   Error: ${
+        result.error
+      }\n\n`;
+    }
+  });
+
+  return ctx.reply(summaryText, { parse_mode: "Markdown" });
+};
+
 const parseDue = (text) => {
   // Accept several formats and normalise to YYYY-MM-DD (Basecamp uses due_on)
   const formats = [
@@ -789,9 +899,6 @@ bot.on("text", requireAuth, async (ctx) => {
           });
         });
 
-        // Process each task and create them directly
-        const results = [];
-
         // Fetch Basecamp people once for all tasks to avoid multiple API calls
         let basecampPeople = null;
         try {
@@ -809,6 +916,8 @@ bot.on("text", requireAuth, async (ctx) => {
           );
         }
 
+        // Process all tasks to check what's missing
+        const processedTasks = [];
         for (const taskData of aiResult.tasks) {
           console.log(`\n=== Processing task: ${taskData.title} ===`);
           console.log(`Task data:`, {
@@ -826,7 +935,7 @@ bot.on("text", requireAuth, async (ctx) => {
             context,
             access,
             accountId,
-            basecampPeople // Pass the pre-fetched Basecamp people
+            basecampPeople
           );
 
           console.log(`Processed task result:`, {
@@ -834,54 +943,51 @@ bot.on("text", requireAuth, async (ctx) => {
             projectId: processedTask.projectId,
             assigneeId: processedTask.assigneeId,
             assigneeEmail: processedTask.assigneeEmail,
+            dueOn: processedTask.dueOn,
           });
 
-          // Need to have at least a project to create the task
-          if (!processedTask.projectId) {
-            results.push({
-              success: false,
-              title: processedTask.title,
-              error: "No project matched",
-            });
-            continue;
-          }
-
-          try {
-            // Get todo list for the project
-            const list = await chooseDefaultTodoList(
-              ctx,
-              processedTask.projectId
-            );
-
-            // Create the task
-            const todo = await createTodo(ctx, {
-              projectId: processedTask.projectId,
-              todoListId: list.id,
-              title: processedTask.title,
-              description: processedTask.description,
-              assigneeId: processedTask.assigneeId,
-              dueOn: processedTask.dueOn,
-            });
-
-            results.push({
-              success: true,
-              title: processedTask.title,
-              url: todo.app_url,
-              assigneeEmail: processedTask.assigneeEmail,
-              assigneeId: processedTask.assigneeId,
-            });
-          } catch (error) {
-            console.error(
-              `Error creating task "${processedTask.title}":`,
-              error.message
-            );
-            results.push({
-              success: false,
-              title: processedTask.title,
-              error: error.message,
-            });
-          }
+          processedTasks.push(processedTask);
         }
+
+        // Check if any tasks are missing project or due date
+        const tasksNeedingInfo = processedTasks
+          .map((task, index) => ({
+            index,
+            task,
+            needsProject: !task.projectId,
+            needsDueDate: !task.dueOn,
+          }))
+          .filter((t) => t.needsProject || t.needsDueDate);
+
+        if (tasksNeedingInfo.length > 0) {
+          // Delete the processing message
+          try {
+            await ctx.deleteMessage(processingMessage.message_id);
+          } catch (deleteError) {
+            console.log(
+              "Could not delete processing message:",
+              deleteError.message
+            );
+          }
+
+          console.log(`${tasksNeedingInfo.length} tasks need additional info`);
+
+          // Store processed tasks and enter interactive mode
+          f.selections.batchTasks = processedTasks;
+          f.selections.batchTasksNeedingInfo = tasksNeedingInfo;
+          f.selections.currentBatchTaskIndex = 0;
+          f.selections.basecampPeople = basecampPeople;
+
+          // Ask for first missing info
+          return askBatchTaskInfo(ctx);
+        }
+
+        // All info present, create tasks directly
+        const results = await createBatchTasks(
+          ctx,
+          processedTasks,
+          basecampPeople
+        );
 
         // Delete the processing message
         try {
@@ -893,31 +999,10 @@ bot.on("text", requireAuth, async (ctx) => {
           );
         }
 
-        // Send summary of created tasks
-        const successCount = results.filter((r) => r.success).length;
-        const failCount = results.filter((r) => !r.success).length;
-
-        let summaryText = `✅ **Batch Task Creation Complete**\n\n`;
-        summaryText += `📊 Created ${successCount} task(s), ${failCount} failed\n\n`;
-
-        results.forEach((result, index) => {
-          if (result.success) {
-            summaryText += `✅ ${index + 1}. ${result.title}\n   ${result.url}`;
-            if (result.assigneeEmail) {
-              summaryText += `\n   👤 Assigned to: ${result.assigneeEmail}`;
-            } else {
-              summaryText += `\n   ⚠️ No assignee`;
-            }
-            summaryText += `\n\n`;
-          } else {
-            summaryText += `❌ ${index + 1}. ${result.title}\n   Error: ${
-              result.error
-            }\n\n`;
-          }
-        });
-
+        // Send summary
+        await sendBatchTaskSummary(ctx, results);
         await resetFlow(ctx);
-        return ctx.reply(summaryText, { parse_mode: "Markdown" });
+        return;
       }
 
       // Single task - use existing flow
@@ -1018,24 +1103,119 @@ bot.on("text", requireAuth, async (ctx) => {
       return ctx.reply("Sorry, failed to create the task.");
     }
   }
+
+  if (f.step === 7) {
+    // Batch task due date input
+    const needingInfo =
+      f.selections.batchTasksNeedingInfo[f.selections.currentBatchTaskIndex];
+    const taskIndex = needingInfo.index;
+
+    // Allow skipping due date
+    if (text.toLowerCase() === "skip") {
+      console.log(`Skipped due date for task ${taskIndex + 1}`);
+    } else {
+      const due = parseDue(text);
+      if (!due) {
+        return ctx.reply(
+          "Could not parse that date. Try YYYY-MM-DD or DD-MM-YYYY, or type 'skip' to skip."
+        );
+      }
+      // Update the task in batchTasks
+      f.selections.batchTasks[taskIndex].dueOn = due;
+      console.log(`Set due date for task ${taskIndex + 1}: ${due}`);
+    }
+
+    // Mark this question as answered
+    needingInfo.needsDueDate = false;
+
+    // Check if current task still needs info
+    if (!needingInfo.needsProject && !needingInfo.needsDueDate) {
+      // Move to next task needing info
+      f.selections.currentBatchTaskIndex++;
+    }
+
+    // Check if there are more tasks needing info
+    if (
+      f.selections.currentBatchTaskIndex <
+      f.selections.batchTasksNeedingInfo.length
+    ) {
+      return askBatchTaskInfo(ctx);
+    }
+
+    // All info collected, create tasks
+    console.log("All batch task info collected, creating tasks...");
+    const results = await createBatchTasks(
+      ctx,
+      f.selections.batchTasks,
+      f.selections.basecampPeople
+    );
+    await sendBatchTaskSummary(ctx, results);
+    await resetFlow(ctx);
+    return;
+  }
 });
 
 // Project chosen
 bot.action(/^proj_(\d+)$/, requireAuth, async (ctx) => {
   await ctx.answerCbQuery();
   const projectId = Number(ctx.match[1]);
-  ctx.session.flow.selections.projectId = projectId;
+  const f = ctx.session.flow;
 
   // Clean up all project selection messages
-  if (ctx.session.flow.projectMessages) {
-    await cleanupMessages(ctx, ctx.session.flow.projectMessages);
-    ctx.session.flow.projectMessages = [];
+  if (f.projectMessages) {
+    await cleanupMessages(ctx, f.projectMessages);
+    f.projectMessages = [];
   }
+
+  // Check if we're in batch task mode (step 6)
+  if (f.step === 6) {
+    // Batch task project selection
+    const needingInfo =
+      f.selections.batchTasksNeedingInfo[f.selections.currentBatchTaskIndex];
+    const taskIndex = needingInfo.index;
+
+    // Update the task's project
+    f.selections.batchTasks[taskIndex].projectId = projectId;
+    console.log(`Set project for task ${taskIndex + 1}: ${projectId}`);
+
+    // Mark project as provided
+    needingInfo.needsProject = false;
+
+    // Check if current task still needs info (due date)
+    if (needingInfo.needsDueDate) {
+      return askBatchTaskInfo(ctx);
+    }
+
+    // Move to next task needing info
+    f.selections.currentBatchTaskIndex++;
+
+    // Check if there are more tasks needing info
+    if (
+      f.selections.currentBatchTaskIndex <
+      f.selections.batchTasksNeedingInfo.length
+    ) {
+      return askBatchTaskInfo(ctx);
+    }
+
+    // All info collected, create tasks
+    console.log("All batch task info collected, creating tasks...");
+    const results = await createBatchTasks(
+      ctx,
+      f.selections.batchTasks,
+      f.selections.basecampPeople
+    );
+    await sendBatchTaskSummary(ctx, results);
+    await resetFlow(ctx);
+    return;
+  }
+
+  // Normal single task flow
+  f.selections.projectId = projectId;
 
   // pick a default list inside the project (first active list, create if none exists)
   try {
     const list = await chooseDefaultTodoList(ctx, projectId);
-    ctx.session.flow.selections.todoListId = list.id;
+    f.selections.todoListId = list.id;
 
     // Inform user if we created a new list
     if (
@@ -1053,7 +1233,7 @@ bot.action(/^proj_(\d+)$/, requireAuth, async (ctx) => {
     );
   }
 
-  ctx.session.flow.step = 4;
+  f.step = 4;
   return askAssignee(ctx);
 });
 
@@ -1104,72 +1284,67 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
     ctx.session.flow.confirmationMessages = [];
   }
 
-  // Check if AI already extracted project - if so, skip to assignee selection
-  if (ctx.session.flow.selections.projectId) {
-    console.log("Using AI-extracted project, skipping project selection");
-
-    // Get todo list for the project
-    try {
-      const list = await chooseDefaultTodoList(
-        ctx,
-        ctx.session.flow.selections.projectId
-      );
-      ctx.session.flow.selections.todoListId = list.id;
-
-      // Check if AI already extracted assignee - if so, skip to due date
-      if (ctx.session.flow.selections.assigneeId) {
-        console.log("Using AI-extracted assignee, skipping assignee selection");
-
-        // Check if AI already extracted due date - if so, create task immediately
-        if (ctx.session.flow.selections.dueOn) {
-          console.log("Using AI-extracted due date, creating task immediately");
-          const {
-            projectId,
-            todoListId,
-            title,
-            description,
-            assigneeId,
-            dueOn,
-          } = ctx.session.flow.selections;
-          try {
-            const todo = await createTodo(ctx, {
-              projectId,
-              todoListId,
-              title,
-              description,
-              assigneeId,
-              dueOn,
-            });
-            await resetFlow(ctx);
-            return ctx.reply(
-              `✅ Task created: ${todo.content}\nLink: ${todo.app_url}`
-            );
-          } catch (e) {
-            console.error(e?.response?.data || e.message);
-            await resetFlow(ctx);
-            return ctx.reply("Sorry, failed to create the task.");
-          }
-        } else {
-          // Ask for due date
-          ctx.session.flow.step = 5;
-          return askDueDate(ctx);
-        }
-      } else {
-        // Ask for assignee
-        ctx.session.flow.step = 4;
-        return askAssignee(ctx);
-      }
-    } catch (e) {
-      console.error(e?.response?.data || e.message);
-      return ctx.reply(
-        "Could not find or create a to-do list in that project. Please check project permissions."
-      );
-    }
+  // Check if project is missing - if so, ask for it
+  if (!ctx.session.flow.selections.projectId) {
+    console.log("No project found, asking user to select");
+    ctx.session.flow.step = 3;
+    return askProject(ctx);
   }
 
-  // No AI-extracted project, proceed normally
-  ctx.session.flow.step = 3;
-  return askProject(ctx);
+  console.log("Using AI-extracted project, proceeding with task creation");
+
+  // Get todo list for the project
+  try {
+    const list = await chooseDefaultTodoList(
+      ctx,
+      ctx.session.flow.selections.projectId
+    );
+    ctx.session.flow.selections.todoListId = list.id;
+
+    // Check if AI already extracted assignee - if so, skip to due date check
+    if (ctx.session.flow.selections.assigneeId) {
+      console.log("Using AI-extracted assignee, skipping assignee selection");
+
+      // Check if due date is missing - if so, ask for it
+      if (!ctx.session.flow.selections.dueOn) {
+        console.log("No due date found, asking user");
+        ctx.session.flow.step = 5;
+        return askDueDate(ctx);
+      }
+
+      // All info present, create task immediately
+      console.log("Using AI-extracted due date, creating task immediately");
+      const { projectId, todoListId, title, description, assigneeId, dueOn } =
+        ctx.session.flow.selections;
+      try {
+        const todo = await createTodo(ctx, {
+          projectId,
+          todoListId,
+          title,
+          description,
+          assigneeId,
+          dueOn,
+        });
+        await resetFlow(ctx);
+        return ctx.reply(
+          `✅ Task created: ${todo.content}\nLink: ${todo.app_url}`
+        );
+      } catch (e) {
+        console.error(e?.response?.data || e.message);
+        await resetFlow(ctx);
+        return ctx.reply("Sorry, failed to create the task.");
+      }
+    } else {
+      // Ask for assignee
+      ctx.session.flow.step = 4;
+      return askAssignee(ctx);
+    }
+  } catch (e) {
+    console.error(e?.response?.data || e.message);
+    return ctx.reply(
+      "Could not find or create a to-do list in that project. Please check project permissions."
+    );
+  }
 });
 
 bot.action("rewrite_task", requireAuth, async (ctx) => {
