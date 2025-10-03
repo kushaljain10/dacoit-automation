@@ -696,6 +696,16 @@ bot.on("text", requireAuth, async (ctx) => {
       if (aiResult.is_multiple && aiResult.tasks) {
         console.log(`AI detected ${aiResult.tasks.length} tasks`);
 
+        // Log each task's extracted data for debugging
+        aiResult.tasks.forEach((task, index) => {
+          console.log(`Task ${index + 1} extracted:`, {
+            title: task.title,
+            project_name: task.project_name,
+            assignee_names: task.assignee_names,
+            due_date: task.due_date,
+          });
+        });
+
         // Process each task and create them directly
         const results = [];
         for (const taskData of aiResult.tasks) {

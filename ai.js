@@ -18,10 +18,13 @@ For SINGLE TASK, extract:
 4. Assignee names if mentioned (match against available people)
 5. Due date if mentioned
 
-For MULTIPLE TASKS, the format will be like:
-"Assignee Name - Task 1 for Project A. Task 2 for Project B."
+For MULTIPLE TASKS, the format will typically be:
+"Assignee Name - Task 1 for Project A. Task 2 for Project B.
+Another Assignee - Task 3 for Project C. Task 4 for Project D."
 
-Extract each task separately with its assignee and project.
+IMPORTANT: Each line starting with a name followed by a dash (-) indicates the assignee for ALL tasks in that line until the next assignee line.
+
+Extract each task separately with its corresponding assignee and project.
 
 IMPORTANT: Return ONLY a valid JSON object without any markdown formatting, code blocks, or backticks.`;
 
@@ -67,6 +70,45 @@ Return format for MULTIPLE tasks:
       "project_name": "Project name or null",
       "assignee_names": ["Person name"],
       "due_date": "Date or null"
+    }
+  ]
+}
+
+Example input:
+"John Doe - Create homepage for Acme. Design logo for Beta.
+Jane Smith - Review code for Gamma. Test features for Delta."
+
+Example output:
+{
+  "is_multiple": true,
+  "tasks": [
+    {
+      "title": "Create homepage",
+      "description": "Create homepage for Acme project",
+      "project_name": "Acme",
+      "assignee_names": ["John Doe"],
+      "due_date": null
+    },
+    {
+      "title": "Design logo",
+      "description": "Design logo for Beta project",
+      "project_name": "Beta",
+      "assignee_names": ["John Doe"],
+      "due_date": null
+    },
+    {
+      "title": "Review code",
+      "description": "Review code for Gamma project",
+      "project_name": "Gamma",
+      "assignee_names": ["Jane Smith"],
+      "due_date": null
+    },
+    {
+      "title": "Test features",
+      "description": "Test features for Delta project",
+      "project_name": "Delta",
+      "assignee_names": ["Jane Smith"],
+      "due_date": null
     }
   ]
 }
