@@ -597,9 +597,98 @@ bot.on("text", requireAuth, async (ctx) => {
     );
 
     try {
-      const aiResult = await processTaskWithAI(text);
+      // Fetch projects and people to provide context to AI
+      const { access, accountId } = store.get(String(ctx.from.id));
+      let context = { projects: [], people: [] };
+
+      try {
+        // Fetch projects
+        const { data: projects } = await bc(access).get(
+          `https://3.basecampapi.com/${accountId}/projects.json`
+        );
+        context.projects = projects.map((p) => ({ id: p.id, name: p.name }));
+
+        // Fetch people
+        const { data: people } = await bc(access).get(
+          `https://3.basecampapi.com/${accountId}/people.json`
+        );
+        context.people = people.map((p) => ({
+          id: p.id,
+          name: p.name,
+          email: p.email_address,
+        }));
+
+        console.log("Context for AI:", {
+          projects_count: context.projects.length,
+          people_count: context.people.length,
+        });
+      } catch (contextError) {
+        console.error("Error fetching context for AI:", contextError.message);
+        // Continue without context if fetching fails
+      }
+
+      const aiResult = await processTaskWithAI(text, context);
       f.selections.title = aiResult.title;
       f.selections.description = aiResult.description;
+
+      // Store AI-extracted information
+      f.selections.ai_extracted = {
+        project_name: aiResult.project_name,
+        assignee_names: aiResult.assignee_names,
+        due_date: aiResult.due_date,
+      };
+
+      // Try to match project name to project ID
+      if (aiResult.project_name && context.projects.length > 0) {
+        const matchedProject = context.projects.find(
+          (p) =>
+            p.name.toLowerCase() === aiResult.project_name.toLowerCase() ||
+            p.name.toLowerCase().includes(aiResult.project_name.toLowerCase())
+        );
+        if (matchedProject) {
+          f.selections.projectId = matchedProject.id;
+          console.log(
+            `AI matched project: ${matchedProject.name} (${matchedProject.id})`
+          );
+        }
+      }
+
+      // Try to match assignee names to person IDs
+      if (
+        aiResult.assignee_names &&
+        aiResult.assignee_names.length > 0 &&
+        context.people.length > 0
+      ) {
+        const matchedPeople = [];
+        aiResult.assignee_names.forEach((name) => {
+          const matchedPerson = context.people.find(
+            (p) =>
+              p.name.toLowerCase() === name.toLowerCase() ||
+              p.name.toLowerCase().includes(name.toLowerCase()) ||
+              name.toLowerCase().includes(p.name.toLowerCase())
+          );
+          if (matchedPerson) {
+            matchedPeople.push(matchedPerson.id);
+            console.log(
+              `AI matched assignee: ${matchedPerson.name} (${matchedPerson.id})`
+            );
+          }
+        });
+        if (matchedPeople.length > 0) {
+          f.selections.assigneeId = matchedPeople[0]; // Use first matched person
+        }
+      }
+
+      // Parse and store due date if extracted
+      if (aiResult.due_date) {
+        const parsedDue = parseDue(aiResult.due_date);
+        if (parsedDue) {
+          f.selections.dueOn = parsedDue;
+          console.log(
+            `AI extracted due date: ${aiResult.due_date} → ${parsedDue}`
+          );
+        }
+      }
 
       // Delete the processing message after successful AI processing
       try {
@@ -762,6 +851,70 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
     ctx.session.flow.confirmationMessages = [];
   }
 
+  // Check if AI already extracted project - if so, skip to assignee selection
+  if (ctx.session.flow.selections.projectId) {
+    console.log("Using AI-extracted project, skipping project selection");
+
+    // Get todo list for the project
+    try {
+      const list = await chooseDefaultTodoList(
+        ctx,
+        ctx.session.flow.selections.projectId
+      );
+      ctx.session.flow.selections.todoListId = list.id;
+
+      // Check if AI already extracted assignee - if so, skip to due date
+      if (ctx.session.flow.selections.assigneeId) {
+        console.log("Using AI-extracted assignee, skipping assignee selection");
+
+        // Check if AI already extracted due date - if so, create task immediately
+        if (ctx.session.flow.selections.dueOn) {
+          console.log("Using AI-extracted due date, creating task immediately");
+          const {
+            projectId,
+            todoListId,
+            title,
+            description,
+            assigneeId,
+            dueOn,
+          } = ctx.session.flow.selections;
+          try {
+            const todo = await createTodo(ctx, {
+              projectId,
+              todoListId,
+              title,
+              description,
+              assigneeId,
+              dueOn,
+            });
+            await resetFlow(ctx);
+            return ctx.reply(
+              `✅ Task created: ${todo.content}\nLink: ${todo.app_url}`
+            );
+          } catch (e) {
+            console.error(e?.response?.data || e.message);
+            await resetFlow(ctx);
+            return ctx.reply("Sorry, failed to create the task.");
+          }
+        } else {
+          // Ask for due date
+          ctx.session.flow.step = 5;
+          return askDueDate(ctx);
+        }
+      } else {
+        // Ask for assignee
+        ctx.session.flow.step = 4;
+        return askAssignee(ctx);
+      }
+    } catch (e) {
+      console.error(e?.response?.data || e.message);
+      return ctx.reply(
+        "Could not find or create a to-do list in that project. Please check project permissions."
+      );
+    }
+  }
+
+  // No AI-extracted project, proceed normally
   ctx.session.flow.step = 3;
   return askProject(ctx);
 });
