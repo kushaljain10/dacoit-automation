@@ -120,7 +120,13 @@ const askTaskDescription = async (ctx) =>
   );
 
 // Helper function to match and process task data
-const processTaskData = async (taskData, context, access, accountId) => {
+const processTaskData = async (
+  taskData,
+  context,
+  access,
+  accountId,
+  basecampPeople = null
+) => {
   const result = {
     title: taskData.title,
     description: taskData.description,
@@ -153,6 +159,12 @@ const processTaskData = async (taskData, context, access, accountId) => {
     context.people.length > 0
   ) {
     const name = taskData.assignee_names[0]; // Use first assignee
+    console.log(`Trying to match assignee: "${name}"`);
+    console.log(
+      `Available people:`,
+      context.people.map((p) => p.name)
+    );
+
     const matchedPerson = context.people.find(
       (p) =>
         p.name.toLowerCase() === name.toLowerCase() ||
@@ -165,24 +177,42 @@ const processTaskData = async (taskData, context, access, accountId) => {
       result.slackUserId = matchedPerson.slack_user_id;
 
       console.log(
-        `AI matched assignee: ${matchedPerson.name} (${matchedPerson.email})`
+        `✅ AI matched assignee: ${matchedPerson.name} (${matchedPerson.email})`
       );
 
       // Now find the Basecamp user ID by email
       try {
-        const { data: basecampPeople } = await bc(access).get(
-          `https://3.basecampapi.com/${accountId}/people.json`
+        // Fetch Basecamp people only if not already provided
+        if (!basecampPeople) {
+          const { data } = await bc(access).get(
+            `https://3.basecampapi.com/${accountId}/people.json`
+          );
+          basecampPeople = data;
+          console.log(
+            `Fetched ${basecampPeople.length} Basecamp people for matching`
+          );
+        }
+
+        console.log(
+          `Looking for Basecamp user with email: ${matchedPerson.email}`
         );
+        console.log(
+          `Available Basecamp emails:`,
+          basecampPeople.map((bp) => bp.email_address)
+        );
+
         const basecampPerson = basecampPeople.find(
           (bp) =>
             bp.email_address.toLowerCase() === matchedPerson.email.toLowerCase()
         );
         if (basecampPerson) {
           result.assigneeId = basecampPerson.id;
-          console.log(`Matched to Basecamp user ID: ${basecampPerson.id}`);
+          console.log(
+            `✅ Matched to Basecamp user ID: ${basecampPerson.id} (${basecampPerson.name})`
+          );
         } else {
           console.log(
-            `No Basecamp user found with email: ${matchedPerson.email}`
+            `❌ No Basecamp user found with email: ${matchedPerson.email}`
           );
         }
       } catch (error) {
@@ -191,7 +221,16 @@ const processTaskData = async (taskData, context, access, accountId) => {
           error.message
         );
       }
+    } else {
+      console.log(`❌ No match found for assignee: "${name}"`);
     }
+  } else {
+    console.log(`No assignee to match:`, {
+      has_assignee_names: !!taskData.assignee_names,
+      assignee_names_length: taskData.assignee_names?.length,
+      has_people: context.people.length > 0,
+      people_count: context.people.length,
+    });
   }
 
   // Parse and store due date if extracted
@@ -695,7 +734,7 @@ bot.on("text", requireAuth, async (ctx) => {
         );
         context.projects = projects.map((p) => ({ id: p.id, name: p.name }));
 
-        // Use custom people list from environment variable if available
+        // Use custom people list from environment variable only
         if (process.env.CUSTOM_PEOPLE_LIST) {
           try {
             const customPeople = JSON.parse(process.env.CUSTOM_PEOPLE_LIST);
@@ -704,33 +743,24 @@ bot.on("text", requireAuth, async (ctx) => {
               email: p.email,
               slack_user_id: p.slack_user_id,
             }));
-            console.log("Using custom people list from environment");
+            console.log(
+              `Using custom people list from environment (${context.people.length} people)`
+            );
           } catch (parseError) {
             console.error(
               "Error parsing CUSTOM_PEOPLE_LIST:",
               parseError.message
             );
-            console.log("Falling back to Basecamp people list");
-            // Fallback to Basecamp people
-            const { data: people } = await bc(access).get(
-              `https://3.basecampapi.com/${accountId}/people.json`
+            console.warn(
+              "⚠️ CUSTOM_PEOPLE_LIST is invalid, AI will not have people context"
             );
-            context.people = people.map((p) => ({
-              id: p.id,
-              name: p.name,
-              email: p.email_address,
-            }));
+            context.people = [];
           }
         } else {
-          // Fetch people from Basecamp
-          const { data: people } = await bc(access).get(
-            `https://3.basecampapi.com/${accountId}/people.json`
+          console.warn(
+            "⚠️ CUSTOM_PEOPLE_LIST not set, AI will not have people context"
           );
-          context.people = people.map((p) => ({
-            id: p.id,
-            name: p.name,
-            email: p.email_address,
-          }));
+          context.people = [];
         }
 
         console.log("Context for AI:", {
@@ -761,13 +791,50 @@ bot.on("text", requireAuth, async (ctx) => {
 
         // Process each task and create them directly
         const results = [];
+
+        // Fetch Basecamp people once for all tasks to avoid multiple API calls
+        let basecampPeople = null;
+        try {
+          const { data } = await bc(access).get(
+            `https://3.basecampapi.com/${accountId}/people.json`
+          );
+          basecampPeople = data;
+          console.log(
+            `Fetched ${basecampPeople.length} Basecamp people for batch processing`
+          );
+        } catch (error) {
+          console.error(
+            "Error fetching Basecamp people for batch:",
+            error.message
+          );
+        }
+
         for (const taskData of aiResult.tasks) {
+          console.log(`\n=== Processing task: ${taskData.title} ===`);
+          console.log(`Task data:`, {
+            assignee_names: taskData.assignee_names,
+            project_name: taskData.project_name,
+          });
+          console.log(`Context people count: ${context.people.length}`);
+          console.log(
+            `Context people names:`,
+            context.people.map((p) => p.name)
+          );
+
           const processedTask = await processTaskData(
             taskData,
             context,
             access,
-            accountId
+            accountId,
+            basecampPeople // Pass the pre-fetched Basecamp people
           );
+
+          console.log(`Processed task result:`, {
+            title: processedTask.title,
+            projectId: processedTask.projectId,
+            assigneeId: processedTask.assigneeId,
+            assigneeEmail: processedTask.assigneeEmail,
+          });
 
           // Need to have at least a project to create the task
           if (!processedTask.projectId) {
@@ -800,6 +867,8 @@ bot.on("text", requireAuth, async (ctx) => {
               success: true,
               title: processedTask.title,
               url: todo.app_url,
+              assigneeEmail: processedTask.assigneeEmail,
+              assigneeId: processedTask.assigneeId,
             });
           } catch (error) {
             console.error(
@@ -833,9 +902,13 @@ bot.on("text", requireAuth, async (ctx) => {
 
         results.forEach((result, index) => {
           if (result.success) {
-            summaryText += `✅ ${index + 1}. ${result.title}\n   ${
-              result.url
-            }\n\n`;
+            summaryText += `✅ ${index + 1}. ${result.title}\n   ${result.url}`;
+            if (result.assigneeEmail) {
+              summaryText += `\n   👤 Assigned to: ${result.assigneeEmail}`;
+            } else {
+              summaryText += `\n   ⚠️ No assignee`;
+            }
+            summaryText += `\n\n`;
           } else {
             summaryText += `❌ ${index + 1}. ${result.title}\n   Error: ${
               result.error
@@ -852,7 +925,8 @@ bot.on("text", requireAuth, async (ctx) => {
         aiResult,
         context,
         access,
-        accountId
+        accountId,
+        null // No pre-fetched people for single task
       );
       f.selections.title = processedTask.title;
       f.selections.description = processedTask.description;
