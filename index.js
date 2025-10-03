@@ -572,31 +572,38 @@ const createBatchTasks = async (ctx, processedTasks, basecampPeople) => {
           );
 
           console.log(
-            `\n🔍 Verifying assignee ${processedTask.assigneeId} is in project ${processedTask.projectId}`
+            `\n🔍 Verifying assignee ${processedTask.assigneeId} (type: ${typeof processedTask.assigneeId}) is in project ${processedTask.projectId}`
           );
           console.log(
-            `Project people IDs:`,
-            projectPeople.map((p) => p.id)
+            `Project people:`,
+            projectPeople.map((p) => `${p.name} (ID: ${p.id}, type: ${typeof p.id})`)
           );
 
+          // Use loose equality (==) to handle string vs number comparison
           const isInProject = projectPeople.some(
-            (p) => p.id === processedTask.assigneeId
+            (p) => {
+              const match = p.id == processedTask.assigneeId;
+              if (match) {
+                console.log(`   ✅ Match found: ${p.id} (${typeof p.id}) == ${processedTask.assigneeId} (${typeof processedTask.assigneeId})`);
+              }
+              return match;
+            }
           );
 
           if (!isInProject) {
             console.error(
               `\n⚠️ WARNING: Assignee ID ${processedTask.assigneeId} is NOT part of project ${processedTask.projectId}!`
             );
-            console.error(`This task will be created WITHOUT an assignee.`);
             console.error(
               `Available people in project:`,
               projectPeople.map((p) => `${p.name} (ID: ${p.id})`)
             );
-            // Set assigneeId to null so task gets created without assignee
-            processedTask.assigneeId = null;
+            console.error(`⚠️ HOWEVER, we'll still try to assign - Basecamp will reject if truly invalid`);
+            // DON'T set to null - let Basecamp API handle validation
+            // The check might be wrong due to caching or API inconsistencies
           } else {
             const assigneePerson = projectPeople.find(
-              (p) => p.id === processedTask.assigneeId
+              (p) => p.id == processedTask.assigneeId
             );
             console.log(
               `✅ Assignee verified: ${assigneePerson.name} (ID: ${assigneePerson.id}) is in the project`

@@ -223,12 +223,35 @@ User message: "${message.replace(/"/g, '\\"')}"`;
 
     // If it's not a rate limit error or we've exceeded retries, fall back
     console.log("Falling back to simple text processing");
+    console.error(
+      `AI Error: ${error.response?.status} ${
+        error.response?.statusText || error.message
+      }`
+    );
+    if (error.response?.status === 401) {
+      console.error("⚠️ OpenRouter API authentication failed!");
+      console.error("   Check your OPENROUTER_API_KEY in .env file");
+      console.error("   Make sure it starts with 'sk-or-v1-' and is valid");
+    }
+
+    // Try basic parsing of "Name - task description" format
+    let assigneeNames = [];
+    const nameMatch = message.match(
+      /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*-\s*/i
+    );
+    if (nameMatch) {
+      assigneeNames = [nameMatch[1].trim()];
+      console.log(
+        `Fallback: Detected potential assignee name: "${assigneeNames[0]}"`
+      );
+    }
+
     return {
       is_multiple: false,
       title: message.length > 80 ? message.substring(0, 77) + "..." : message,
       description: message,
       project_name: null,
-      assignee_names: [],
+      assignee_names: assigneeNames,
       due_date: null,
     };
   }
