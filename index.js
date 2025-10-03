@@ -572,23 +572,31 @@ const createBatchTasks = async (ctx, processedTasks, basecampPeople) => {
           );
 
           console.log(
-            `\n🔍 Verifying assignee ${processedTask.assigneeId} (type: ${typeof processedTask.assigneeId}) is in project ${processedTask.projectId}`
+            `\n🔍 Verifying assignee ${
+              processedTask.assigneeId
+            } (type: ${typeof processedTask.assigneeId}) is in project ${
+              processedTask.projectId
+            }`
           );
           console.log(
             `Project people:`,
-            projectPeople.map((p) => `${p.name} (ID: ${p.id}, type: ${typeof p.id})`)
+            projectPeople.map(
+              (p) => `${p.name} (ID: ${p.id}, type: ${typeof p.id})`
+            )
           );
 
           // Use loose equality (==) to handle string vs number comparison
-          const isInProject = projectPeople.some(
-            (p) => {
-              const match = p.id == processedTask.assigneeId;
-              if (match) {
-                console.log(`   ✅ Match found: ${p.id} (${typeof p.id}) == ${processedTask.assigneeId} (${typeof processedTask.assigneeId})`);
-              }
-              return match;
+          const isInProject = projectPeople.some((p) => {
+            const match = p.id == processedTask.assigneeId;
+            if (match) {
+              console.log(
+                `   ✅ Match found: ${p.id} (${typeof p.id}) == ${
+                  processedTask.assigneeId
+                } (${typeof processedTask.assigneeId})`
+              );
             }
-          );
+            return match;
+          });
 
           if (!isInProject) {
             console.error(
@@ -598,7 +606,9 @@ const createBatchTasks = async (ctx, processedTasks, basecampPeople) => {
               `Available people in project:`,
               projectPeople.map((p) => `${p.name} (ID: ${p.id})`)
             );
-            console.error(`⚠️ HOWEVER, we'll still try to assign - Basecamp will reject if truly invalid`);
+            console.error(
+              `⚠️ HOWEVER, we'll still try to assign - Basecamp will reject if truly invalid`
+            );
             // DON'T set to null - let Basecamp API handle validation
             // The check might be wrong due to caching or API inconsistencies
           } else {
