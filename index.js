@@ -500,6 +500,14 @@ const createBatchTasks = async (ctx, processedTasks, basecampPeople) => {
   const results = [];
 
   for (const processedTask of processedTasks) {
+    console.log(`\n🔄 Processing task for creation:`, {
+      title: processedTask.title,
+      projectId: processedTask.projectId,
+      assigneeId: processedTask.assigneeId,
+      assigneeEmail: processedTask.assigneeEmail,
+      dueOn: processedTask.dueOn,
+    });
+    
     // Skip tasks without project
     if (!processedTask.projectId) {
       results.push({
@@ -513,6 +521,35 @@ const createBatchTasks = async (ctx, processedTasks, basecampPeople) => {
     try {
       // Get todo list for the project
       const list = await chooseDefaultTodoList(ctx, processedTask.projectId);
+
+      // Verify assignee is part of the project if assigneeId is provided
+      if (processedTask.assigneeId) {
+        try {
+          const { access, accountId } = store.get(String(ctx.from.id));
+          const { data: projectPeople } = await bc(access).get(
+            `https://3.basecampapi.com/${accountId}/projects/${processedTask.projectId}/people.json`
+          );
+          
+          console.log(`\n🔍 Verifying assignee ${processedTask.assigneeId} is in project ${processedTask.projectId}`);
+          console.log(`Project people IDs:`, projectPeople.map(p => p.id));
+          
+          const isInProject = projectPeople.some(p => p.id === processedTask.assigneeId);
+          
+          if (!isInProject) {
+            console.error(`\n⚠️ WARNING: Assignee ID ${processedTask.assigneeId} is NOT part of project ${processedTask.projectId}!`);
+            console.error(`This task will be created WITHOUT an assignee.`);
+            console.error(`Available people in project:`, projectPeople.map(p => `${p.name} (ID: ${p.id})`));
+            // Set assigneeId to null so task gets created without assignee
+            processedTask.assigneeId = null;
+          } else {
+            const assigneePerson = projectPeople.find(p => p.id === processedTask.assigneeId);
+            console.log(`✅ Assignee verified: ${assigneePerson.name} (ID: ${assigneePerson.id}) is in the project`);
+          }
+        } catch (verifyError) {
+          console.error(`Error verifying assignee in project:`, verifyError.message);
+          // Continue anyway - let Basecamp handle it
+        }
+      }
 
       // Create the task
       const todo = await createTodo(ctx, {
@@ -709,6 +746,16 @@ const createTodo = async (
   { projectId, todoListId, title, description, assigneeId, dueOn }
 ) => {
   const { access, accountId } = store.get(String(ctx.from.id));
+  
+  console.log(`\n🔵 createTodo called with:`, {
+    title,
+    projectId,
+    todoListId,
+    assigneeId,
+    assigneeId_type: typeof assigneeId,
+    dueOn,
+  });
+  
   const payload = {
     todo: {
       content: title,
@@ -719,9 +766,10 @@ const createTodo = async (
     },
   };
 
-  console.log(`Creating todo with payload:`, {
+  console.log(`📤 Sending to Basecamp API:`, {
     content: payload.todo.content,
     assignee_ids: payload.todo.assignee_ids,
+    assignee_ids_length: payload.todo.assignee_ids.length,
     due_on: payload.todo.due_on,
   });
 
@@ -731,16 +779,30 @@ const createTodo = async (
   const response = await bc(access).post(url, payload);
   const { data } = response;
 
-  console.log(`Full API response status:`, response.status);
-  console.log(`Todo creation response:`, {
+  console.log(`✅ API Response Status:`, response.status);
+  console.log(`📥 Basecamp returned:`, {
     id: data.id,
     content: data.content,
     assignee: data.assignee,
-    assignees: data.assignees, // Check if it's plural
+    assignees: data.assignees,
+    assignees_length: data.assignees?.length || 0,
     due_on: data.due_on,
     status: data.status,
     app_url: data.app_url,
   });
+  
+  // Verify assignment
+  if (assigneeId && (!data.assignees || data.assignees.length === 0)) {
+    console.error(`\n❌ ASSIGNMENT FAILED!`);
+    console.error(`   Sent assignee_ids: [${assigneeId}]`);
+    console.error(`   Received assignees:`, data.assignees);
+    console.error(`   This could indicate:`);
+    console.error(`   - Invalid assignee ID`);
+    console.error(`   - User not part of the project`);
+    console.error(`   - Permission issue`);
+  } else if (assigneeId && data.assignees && data.assignees.length > 0) {
+    console.log(`✅ Task successfully assigned to:`, data.assignees.map(a => `${a.name} (ID: ${a.id})`));
+  }
 
   // Log the full response to see what fields are available
   console.log(`Full response data keys:`, Object.keys(data));
