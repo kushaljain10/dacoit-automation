@@ -20,6 +20,7 @@ const {
   storeTaskMessage,
   getTaskMessage,
 } = require("./airtable");
+const { getCustomers, createCustomer, createInvoice } = require("./copperx");
 require("dotenv").config();
 dayjs.extend(customParseFormat);
 
@@ -925,6 +926,162 @@ const createTodo = async (
   return data; // includes id, app_url, etc.
 };
 
+/** ------------ Invoice Creation Helpers ------------ **/
+
+const resetInvoiceFlow = (ctx) => {
+  ctx.session.invoiceFlow = {
+    step: 0,
+    data: {
+      customerId: null,
+      customerName: null,
+      currency: null,
+      dueDate: null,
+      lineItems: [],
+    },
+    newCustomer: {},
+    pagination: {
+      offset: 0,
+      limit: 10,
+    },
+  };
+};
+
+const askCustomer = async (ctx, offset = 0) => {
+  try {
+    const limit = 10;
+    const response = await getCustomers({ limit, offset });
+
+    const customers = response.data || [];
+    const total = response.meta?.total || customers.length;
+    const hasMore = offset + customers.length < total;
+    const hasPrevious = offset > 0;
+
+    // Build customer options
+    const buttons = [];
+
+    // Add "Add New Customer" button as first option
+    buttons.push([
+      Markup.button.callback("➕ Add New Customer", "invoice_customer_new"),
+    ]);
+
+    // Add customer buttons
+    customers.forEach((customer) => {
+      const displayText = `${customer.name}${
+        customer.email ? ` (${customer.email})` : ""
+      }`;
+      buttons.push([
+        Markup.button.callback(displayText, `invoice_customer_${customer.id}`),
+      ]);
+    });
+
+    // Add pagination buttons if needed
+    const paginationRow = [];
+    if (hasPrevious) {
+      paginationRow.push(
+        Markup.button.callback("⬅️ Previous", `invoice_page_${offset - limit}`)
+      );
+    }
+    if (hasMore) {
+      paginationRow.push(
+        Markup.button.callback("➡️ Next", `invoice_page_${offset + limit}`)
+      );
+    }
+    if (paginationRow.length > 0) {
+      buttons.push(paginationRow);
+    }
+
+    await ctx.reply(
+      `📋 *Select a customer or add a new one:*\n\n` +
+        `Showing ${offset + 1}-${
+          offset + customers.length
+        } of ${total} customers`,
+      {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard(buttons),
+      }
+    );
+  } catch (error) {
+    console.error("Error fetching customers:", error);
+    await ctx.reply(
+      "❌ Failed to fetch customers. Please try again or contact support."
+    );
+  }
+};
+
+const askCustomerDetails = async (ctx, field) => {
+  const prompts = {
+    name: "👤 Please enter the customer's *name*:",
+    email: "📧 Please enter the customer's *email*:",
+    organizationName: "🏢 Please enter the *organization name*:",
+  };
+
+  await ctx.reply(prompts[field], { parse_mode: "Markdown" });
+};
+
+const askCurrency = async (ctx) => {
+  const buttons = [
+    [Markup.button.callback("ETH", "invoice_currency_eth")],
+    [Markup.button.callback("USDC", "invoice_currency_usdc")],
+    [Markup.button.callback("USDT", "invoice_currency_usdt")],
+  ];
+
+  await ctx.reply("💰 *Select currency:*", {
+    parse_mode: "Markdown",
+    ...Markup.inlineKeyboard(buttons),
+  });
+};
+
+const askInvoiceDueDate = async (ctx) => {
+  const buttons = [
+    [Markup.button.callback("Today", "invoice_due_0")],
+    [Markup.button.callback("Tomorrow", "invoice_due_1")],
+    [Markup.button.callback("7 days", "invoice_due_7")],
+    [Markup.button.callback("14 days", "invoice_due_14")],
+    [Markup.button.callback("30 days", "invoice_due_30")],
+    [Markup.button.callback("45 days", "invoice_due_45")],
+    [Markup.button.callback("60 days", "invoice_due_60")],
+    [Markup.button.callback("90 days", "invoice_due_90")],
+  ];
+
+  await ctx.reply("📅 *Select due date:*", {
+    parse_mode: "Markdown",
+    ...Markup.inlineKeyboard(buttons),
+  });
+};
+
+const askLineItem = async (ctx) => {
+  await ctx.reply(
+    "📝 *Add a line item*\n\n" +
+      "Please enter the item details in this format:\n" +
+      "`Item Name | Price`\n\n" +
+      "Example: `Web Development | 5000`",
+    { parse_mode: "Markdown" }
+  );
+};
+
+const confirmLineItems = async (ctx) => {
+  const items = ctx.session.invoiceFlow.data.lineItems;
+
+  let itemsList = "*Current line items:*\n\n";
+  items.forEach((item, index) => {
+    itemsList += `${index + 1}. ${item.name} - $${item.price}\n`;
+  });
+
+  const total = items.reduce((sum, item) => sum + parseFloat(item.price), 0);
+  itemsList += `\n*Total:* $${total.toFixed(2)}`;
+
+  const buttons = [
+    [Markup.button.callback("➕ Add Another Item", "invoice_item_add")],
+    [Markup.button.callback("✅ Create Invoice", "invoice_create")],
+    [Markup.button.callback("❌ Cancel", "invoice_cancel")],
+  ];
+
+  await ctx.reply(itemsList, {
+    parse_mode: "Markdown",
+    ...Markup.inlineKeyboard(buttons),
+  });
+};
+
 /** ------------ Telegram bot handlers ------------ **/
 bot.start(requireAuth, async (ctx) => {
   console.log("🚀 Start command received from:", ctx.from);
@@ -982,10 +1139,149 @@ bot.command("help", requireAuth, async (ctx) => {
       "⚙️ *Commands:*\n" +
       "• /start - Show welcome message\n" +
       "• /stop - Cancel current task creation\n" +
+      "• /create_invoice - Create a new invoice\n" +
       "• /help - Show this help message\n\n" +
       "_This bot uses AI to make task creation effortless!_",
     { parse_mode: "Markdown" }
   );
+});
+
+bot.command("create_invoice", requireAuth, async (ctx) => {
+  console.log("💰 Create invoice command received from:", ctx.from);
+  ctx.session ??= {};
+  ctx.session.invoiceFlow ??= {};
+  resetInvoiceFlow(ctx);
+  ctx.session.invoiceFlow.step = 1; // Start invoice flow
+
+  await ctx.reply("🧾 *Creating a new invoice...*", { parse_mode: "Markdown" });
+  await askCustomer(ctx, 0);
+});
+
+// Handle callback queries for invoice flow
+bot.on("callback_query", requireAuth, async (ctx) => {
+  const data = ctx.callbackQuery.data;
+
+  // Handle invoice-related callbacks
+  if (data.startsWith("invoice_")) {
+    await ctx.answerCbQuery(); // Acknowledge the button press
+
+    ctx.session ??= {};
+    ctx.session.invoiceFlow ??= {};
+
+    // Pagination
+    if (data.startsWith("invoice_page_")) {
+      const offset = parseInt(data.replace("invoice_page_", ""));
+      await askCustomer(ctx, offset);
+      return;
+    }
+
+    // Customer selection
+    if (data.startsWith("invoice_customer_")) {
+      if (data === "invoice_customer_new") {
+        // Start new customer creation flow
+        ctx.session.invoiceFlow.step = 2; // New customer flow - collect name
+        ctx.session.invoiceFlow.newCustomer = {};
+        await askCustomerDetails(ctx, "name");
+      } else {
+        // Existing customer selected
+        const customerId = data.replace("invoice_customer_", "");
+
+        // Extract customer name from the button text
+        const buttonText =
+          ctx.callbackQuery.message.reply_markup.inline_keyboard
+            .flat()
+            .find((btn) => btn.callback_data === data)?.text || "Customer";
+
+        ctx.session.invoiceFlow.data.customerId = customerId;
+        ctx.session.invoiceFlow.data.customerName = buttonText;
+        ctx.session.invoiceFlow.step = 5; // Move to currency selection
+        await ctx.reply(`✅ Customer selected: ${buttonText}`);
+        await askCurrency(ctx);
+      }
+      return;
+    }
+
+    // Currency selection
+    if (data.startsWith("invoice_currency_")) {
+      const currency = data.replace("invoice_currency_", "");
+      ctx.session.invoiceFlow.data.currency = currency;
+      ctx.session.invoiceFlow.step = 6; // Move to due date selection
+      await ctx.reply(`✅ Currency: ${currency.toUpperCase()}`);
+      await askInvoiceDueDate(ctx);
+      return;
+    }
+
+    // Due date selection
+    if (data.startsWith("invoice_due_")) {
+      const days = parseInt(data.replace("invoice_due_", ""));
+      const dueDate = dayjs().add(days, "day").format("YYYY-MM-DD");
+      ctx.session.invoiceFlow.data.dueDate = dueDate;
+      ctx.session.invoiceFlow.step = 7; // Move to line items
+      await ctx.reply(`✅ Due date: ${dueDate}`);
+      await askLineItem(ctx);
+      return;
+    }
+
+    // Line item actions
+    if (data === "invoice_item_add") {
+      await askLineItem(ctx);
+      return;
+    }
+
+    if (data === "invoice_create") {
+      // Create the invoice
+      await ctx.reply("⏳ Creating invoice...");
+
+      try {
+        const invoiceData = {
+          customerId: ctx.session.invoiceFlow.data.customerId,
+          currency: ctx.session.invoiceFlow.data.currency,
+          dueDate: ctx.session.invoiceFlow.data.dueDate,
+          lineItems: ctx.session.invoiceFlow.data.lineItems.map((item) => ({
+            name: item.name,
+            price: parseFloat(item.price),
+          })),
+        };
+
+        const invoice = await createInvoice(invoiceData);
+
+        const total = ctx.session.invoiceFlow.data.lineItems.reduce(
+          (sum, item) => sum + parseFloat(item.price),
+          0
+        );
+
+        await ctx.reply(
+          `✅ *Invoice created successfully!*\n\n` +
+            `Invoice ID: \`${invoice.id}\`\n` +
+            `Customer: ${ctx.session.invoiceFlow.data.customerName}\n` +
+            `Currency: ${invoiceData.currency.toUpperCase()}\n` +
+            `Due Date: ${invoiceData.dueDate}\n` +
+            `Total: $${total.toFixed(2)}\n\n` +
+            `${
+              invoice.hostedInvoiceUrl
+                ? `🔗 [View Invoice](${invoice.hostedInvoiceUrl})`
+                : ""
+            }`,
+          { parse_mode: "Markdown" }
+        );
+
+        resetInvoiceFlow(ctx);
+      } catch (error) {
+        console.error("Error creating invoice:", error);
+        await ctx.reply(
+          "❌ Failed to create invoice. Please try again or contact support.\n\n" +
+            `Error: ${error.response?.data?.message || error.message}`
+        );
+      }
+      return;
+    }
+
+    if (data === "invoice_cancel") {
+      resetInvoiceFlow(ctx);
+      await ctx.reply("❌ Invoice creation cancelled.");
+      return;
+    }
+  }
 });
 
 bot.on("text", requireAuth, async (ctx) => {
@@ -1001,10 +1297,104 @@ bot.on("text", requireAuth, async (ctx) => {
   });
 
   ctx.session ??= {};
-  ctx.session.flow ??= { step: 0, selections: {} };
-  let f = ctx.session.flow;
 
   const text = ctx.message.text?.trim();
+
+  // Handle invoice flow text inputs
+  if (ctx.session.invoiceFlow && ctx.session.invoiceFlow.step > 0) {
+    const flow = ctx.session.invoiceFlow;
+
+    // New customer creation flow
+    if (flow.step === 2) {
+      // Collecting name
+      flow.newCustomer.name = text;
+      flow.step = 3;
+      await askCustomerDetails(ctx, "email");
+      return;
+    }
+
+    if (flow.step === 3) {
+      // Collecting email
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(text)) {
+        await ctx.reply(
+          "❌ Invalid email format. Please enter a valid email address."
+        );
+        return;
+      }
+      flow.newCustomer.email = text;
+      flow.step = 4;
+      await askCustomerDetails(ctx, "organizationName");
+      return;
+    }
+
+    if (flow.step === 4) {
+      // Collecting organization name and creating customer
+      flow.newCustomer.organizationName = text;
+
+      await ctx.reply("⏳ Creating customer...");
+
+      try {
+        const customer = await createCustomer(flow.newCustomer);
+        flow.data.customerId = customer.id;
+        flow.data.customerName = customer.name;
+        flow.step = 5;
+
+        await ctx.reply(`✅ Customer created: ${customer.name}`);
+        await askCurrency(ctx);
+      } catch (error) {
+        console.error("Error creating customer:", error);
+        await ctx.reply(
+          "❌ Failed to create customer. Please check the details and try again.\n\n" +
+            `Error: ${error.response?.data?.message || error.message}`
+        );
+        flow.step = 2;
+        await askCustomerDetails(ctx, "name");
+      }
+      return;
+    }
+
+    // Line item collection
+    if (flow.step === 7) {
+      // Parse line item: "Item Name | Price"
+      const parts = text.split("|").map((p) => p.trim());
+
+      if (parts.length !== 2) {
+        await ctx.reply("❌ Invalid format. Please use: `Item Name | Price`", {
+          parse_mode: "Markdown",
+        });
+        return;
+      }
+
+      const [name, priceStr] = parts;
+      const price = parseFloat(priceStr);
+
+      if (isNaN(price) || price <= 0) {
+        await ctx.reply(
+          "❌ Invalid price. Please enter a valid positive number."
+        );
+        return;
+      }
+
+      flow.data.lineItems.push({ name, price: price.toString() });
+
+      await ctx.reply(`✅ Item added: ${name} - $${price}`);
+      await confirmLineItems(ctx);
+      return;
+    }
+
+    // If we get here and in invoice flow, something went wrong
+    if (flow.step > 0) {
+      await ctx.reply(
+        "⚠️ Unexpected input. Please use the buttons provided or type /create_invoice to start over."
+      );
+      return;
+    }
+  }
+
+  ctx.session.flow ??= { step: 0, selections: {} };
+  let f = ctx.session.flow;
 
   // If no active flow or at step 0, treat any message as task creation request
   if (!f.step || f.step === 0) {
