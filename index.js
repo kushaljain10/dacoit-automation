@@ -1748,10 +1748,41 @@ app.post("/basecamp/webhook", async (req, res) => {
       try {
         const airtablePeople = await fetchPeople();
         enrichedAssignees = enrichedAssignees.map((assignee) => {
-          const airtablePerson = airtablePeople.find(
-            (ap) =>
-              ap.email.toLowerCase() === assignee.email_address?.toLowerCase()
+          console.log(`Looking up assignee in Airtable:`, {
+            basecamp_id: assignee.id,
+            email: assignee.email_address,
+            name: assignee.name,
+          });
+
+          // First try to match by Basecamp ID (most reliable)
+          let airtablePerson = airtablePeople.find(
+            (ap) => ap.basecamp_id && ap.basecamp_id == assignee.id
           );
+
+          // Fall back to email matching if basecamp_id match failed
+          if (!airtablePerson && assignee.email_address) {
+            airtablePerson = airtablePeople.find(
+              (ap) =>
+                ap.email &&
+                ap.email.toLowerCase() === assignee.email_address.toLowerCase()
+            );
+            if (airtablePerson) {
+              console.log(
+                `✅ Matched assignee ${assignee.name} by email: ${assignee.email_address}`
+              );
+            }
+          } else if (airtablePerson) {
+            console.log(
+              `✅ Matched assignee ${assignee.name} by Basecamp ID: ${assignee.id}`
+            );
+          }
+
+          if (!airtablePerson) {
+            console.log(
+              `⚠️ No Airtable match found for assignee ${assignee.name} (basecamp_id: ${assignee.id}, email: ${assignee.email_address})`
+            );
+          }
+
           return {
             ...assignee,
             slack_user_id: airtablePerson?.slack_user_id || null,
@@ -1759,7 +1790,10 @@ app.post("/basecamp/webhook", async (req, res) => {
         });
         console.log(
           "Enriched assignees with Slack user IDs from Airtable:",
-          enrichedAssignees
+          enrichedAssignees.map((a) => ({
+            name: a.name,
+            slack_user_id: a.slack_user_id,
+          }))
         );
       } catch (error) {
         console.error(
