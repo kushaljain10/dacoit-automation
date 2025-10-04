@@ -73,31 +73,31 @@ const formatBasecampUpdate = (type, data) => {
               text: `*${data.title}*`,
             },
           },
-          // {
-          //   type: "section",
-          //   text: {
-          //     type: "mrkdwn",
-          //     text: data.description || "_No description provided_",
-          //   },
-          // },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: data.description || "_No description provided_",
+            },
+          },
           {
             type: "section",
             fields: [
               {
                 type: "mrkdwn",
-                text: `*Project:*\n${data.project_name}`,
+                text: `*Project:* ${data.project_name}`,
               },
               {
                 type: "mrkdwn",
-                text: `*Due Date:*\n${dueDateText}`,
+                text: `*Due Date:* ${dueDateText}`,
               },
               {
                 type: "mrkdwn",
-                text: `*Assigned to:*\n${assigneesText}`,
+                text: `*Assigned to:* ${assigneesText}`,
               },
               {
                 type: "mrkdwn",
-                text: `*Created by:*\n${data.creator_name}`,
+                text: `*Created by:* ${data.creator_name}`,
               },
             ],
           },
