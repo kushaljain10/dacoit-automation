@@ -1720,31 +1720,64 @@ app.post("/basecamp/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // For todo_created events, fetch the full todo details to get all information
+    // Fetch full details for all event types to ensure we have complete information
     let todoDetails = null;
-    if (event.kind === "todo_created" && event.recording.url) {
-      try {
-        const users = await store.getAllUsers();
-        if (users.length > 0) {
-          const auth = await store.get(users[0]);
-          if (auth) {
-            const { data: fetchedTodo } = await bc(auth.access).get(
-              event.recording.url
-            );
-            todoDetails = fetchedTodo;
-            console.log("Fetched full todo details:", {
-              title: todoDetails.title,
-              content: todoDetails.content,
-              description: todoDetails.description,
-              assignees: todoDetails.assignees,
-              due_on: todoDetails.due_on,
-              all_keys: Object.keys(todoDetails),
-            });
+    let parentTodo = null; // For comments, this will be the parent todo
+
+    try {
+      const users = await store.getAllUsers();
+      if (users.length > 0) {
+        const auth = await store.get(users[0]);
+        if (auth) {
+          // For todo events, fetch the todo itself
+          if (
+            event.kind === "todo_created" ||
+            event.kind === "todo_completed"
+          ) {
+            if (event.recording.url) {
+              const { data: fetchedTodo } = await bc(auth.access).get(
+                event.recording.url
+              );
+              todoDetails = fetchedTodo;
+              console.log(`Fetched full todo details for ${event.kind}:`, {
+                id: todoDetails.id,
+                title: todoDetails.title,
+                assignees: todoDetails.assignees,
+              });
+            }
+          }
+
+          // For comment events, we need to fetch the parent todo
+          if (event.kind === "comment_created") {
+            console.log("Comment event detected, looking for parent todo...");
+
+            // The comment itself
+            if (event.recording.url) {
+              const { data: comment } = await bc(auth.access).get(
+                event.recording.url
+              );
+              console.log("Comment data:", {
+                id: comment.id,
+                parent: comment.parent,
+              });
+
+              // Fetch the parent todo if available
+              if (comment.parent && comment.parent.url) {
+                const { data: fetchedTodo } = await bc(auth.access).get(
+                  comment.parent.url
+                );
+                parentTodo = fetchedTodo;
+                console.log("Fetched parent todo for comment:", {
+                  id: parentTodo.id,
+                  title: parentTodo.title,
+                });
+              }
+            }
           }
         }
-      } catch (error) {
-        console.error("Error fetching full todo details:", error.message);
       }
+    } catch (error) {
+      console.error("Error fetching event details:", error.message);
     }
 
     // Enrich assignees with slack_id from Airtable
@@ -1856,7 +1889,10 @@ app.post("/basecamp/webhook", async (req, res) => {
 
     // Format the event data
     const data = {
-      title: todoDetails?.title || event.recording.title,
+      title:
+        event.kind === "comment_created"
+          ? parentTodo?.title || event.recording.title // Use parent todo title for comments
+          : todoDetails?.title || event.recording.title,
       description:
         todoDetails?.description ||
         todoDetails?.content ||
@@ -1864,11 +1900,14 @@ app.post("/basecamp/webhook", async (req, res) => {
       project_name: event.recording.bucket.name,
       creator_name: event.creator.name,
       creator_slack_id: creatorSlackId,
-      url: event.recording.app_url,
+      url:
+        event.kind === "comment_created"
+          ? parentTodo?.app_url || event.recording.app_url // Use parent todo URL for comments
+          : event.recording.app_url,
       due_date: todoDetails?.due_on || event.recording.due_on || null,
       completer_name: event.recording.completer?.name,
       assignees: enrichedAssignees,
-      content: event.recording.content, // For comments
+      content: event.recording.content, // For comments, this is the actual comment text
     };
 
     console.log("Formatted data for Slack:", {
@@ -1901,17 +1940,29 @@ app.post("/basecamp/webhook", async (req, res) => {
       case "todo_completed":
       case "comment_created":
         // Try to find the original message to reply to thread
-        const taskId = event.recording.id || todoDetails?.id;
+        // For comments, use the parent todo ID; for completed, use the todo ID
+        let taskId = null;
+        if (event.kind === "comment_created") {
+          taskId = parentTodo?.id;
+          console.log(`Comment event - using parent todo ID: ${taskId}`);
+        } else {
+          taskId = todoDetails?.id || event.recording.id;
+          console.log(`Completed event - using todo ID: ${taskId}`);
+        }
+
         let threadInfo = null;
 
         if (taskId) {
           threadInfo = await getTaskMessage(taskId);
+          console.log(`Lookup result for task ${taskId}:`, threadInfo);
+        } else {
+          console.log(`⚠️ No task ID found for ${event.kind} event`);
         }
 
         if (threadInfo && threadInfo.thread_ts) {
           // Reply to the original thread
           console.log(
-            `Found original message, replying to thread for ${event.kind}`
+            `✅ Found original message, replying to thread for ${event.kind}`
           );
           await sendToSlack(
             threadInfo.channel_id,
@@ -1922,7 +1973,7 @@ app.post("/basecamp/webhook", async (req, res) => {
         } else {
           // No thread found, send as new message
           console.log(
-            `No thread found for task ${taskId}, sending as new message`
+            `⚠️ No thread found for task ${taskId}, sending as new message`
           );
           await sendToSlack(channelId, event.kind, data);
         }
