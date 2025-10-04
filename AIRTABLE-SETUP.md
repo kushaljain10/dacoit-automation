@@ -12,16 +12,31 @@ This bot now uses Airtable instead of environment variables to manage:
 1. Go to [Airtable](https://airtable.com) and create a new base
 2. Name it something like "Basecamp Bot Data"
 
-### 2. Create People Table
+### 2. Create Auth Table (for Basecamp credentials)
 
-Create a table named `People` with these columns:
+Create a table named `auth` with these columns:
 
-| Column Name       | Type             | Description         | Example               |
-| ----------------- | ---------------- | ------------------- | --------------------- |
-| **Name**          | Single line text | Person's full name  | `Karan Ruparel`       |
-| **Email**         | Email            | Their email address | `karan@dacoit.design` |
-| **Slack User ID** | Single line text | Slack member ID     | `U12345ABCDE`         |
-| **Basecamp ID**   | Number           | Basecamp user ID    | `12345678`            |
+| Column Name       | Type             | Description                  | Example       |
+| ----------------- | ---------------- | ---------------------------- | ------------- |
+| **user_id**       | Single line text | Telegram/Slack user ID       | `123456789`   |
+| **access_token**  | Long text        | Encrypted Basecamp token     | `U2FsdGVk...` |
+| **refresh_token** | Long text        | Encrypted refresh token      | `U2FsdGVk...` |
+| **account_id**    | Number           | Basecamp account ID          | `5819631`     |
+| **platform**      | Single line text | Platform (telegram or slack) | `telegram`    |
+| **updated_at**    | Date             | Last updated timestamp       | `2025-10-04`  |
+
+**Security Note:** Tokens are automatically encrypted before storage using AES-256 encryption.
+
+### 3. Create people Table
+
+Create a table named `people` with these columns:
+
+| Column Name     | Type             | Description         | Example               |
+| --------------- | ---------------- | ------------------- | --------------------- |
+| **name**        | Single line text | Person's full name  | `Karan Ruparel`       |
+| **email**       | Email            | Their email address | `karan@dacoit.design` |
+| **slack_id**    | Single line text | Slack member ID     | `U12345ABCDE`         |
+| **basecamp_id** | Number           | Basecamp user ID    | `12345678`            |
 
 #### How to Get These IDs:
 
@@ -35,15 +50,15 @@ Create a table named `People` with these columns:
 - Visit: `http://localhost:3000/debug/basecamp-users`
 - Find the user and copy their `id`
 
-### 3. Create Projects Table
+### 4. Create projects Table
 
-Create a table named `Projects` with these columns:
+Create a table named `projects` with these columns:
 
-| Column Name             | Type                        | Description         | Example              |
-| ----------------------- | --------------------------- | ------------------- | -------------------- |
-| **Basecamp Project ID** | Number                      | Basecamp project ID | `44141016`           |
-| **Slack Channel ID**    | Single line text            | Slack channel ID    | `C12345ABCDE`        |
-| **Project Name**        | Single line text (optional) | For reference only  | `Automation Testing` |
+| Column Name     | Type                        | Description         | Example              |
+| --------------- | --------------------------- | ------------------- | -------------------- |
+| **basecamp_id** | Number                      | Basecamp project ID | `44141016`           |
+| **slack_id**    | Single line text            | Slack channel ID    | `C12345ABCDE`        |
+| **name**        | Single line text (optional) | For reference only  | `Automation Testing` |
 
 #### How to Get These IDs:
 
@@ -57,7 +72,7 @@ Create a table named `Projects` with these columns:
 - In Slack, right-click on a channel → View channel details
 - Scroll down and copy the Channel ID
 
-### 4. Get Airtable Credentials
+### 5. Get Airtable Credentials
 
 **Personal Access Token:**
 
@@ -66,6 +81,7 @@ Create a table named `Projects` with these columns:
 3. Give it a name (e.g., "Basecamp Bot")
 4. Add these scopes:
    - `data.records:read` (to read your data)
+   - `data.records:write` (to store auth tokens)
 5. Add access to your base (select the base you created)
 6. Click "Create token"
 7. Copy the token (starts with `pat...`) - **you won't see it again!**
@@ -76,7 +92,21 @@ Create a table named `Projects` with these columns:
 2. Click on your base
 3. You'll see the Base ID in the introduction (starts with `app...`)
 
-### 5. Update Environment Variables
+### 6. Generate Encryption Key
+
+For security, generate a strong encryption key to protect Basecamp tokens:
+
+```bash
+# On Mac/Linux, generate a random 32-character key:
+openssl rand -base64 32
+
+# Or use Node.js:
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+Copy the output - you'll need it for the next step.
+
+### 7. Update Environment Variables
 
 Add these to your `.env` file:
 
@@ -85,24 +115,39 @@ Add these to your `.env` file:
 AIRTABLE_PERSONAL_ACCESS_TOKEN=patXXXXXXXXXXXXXX.XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 AIRTABLE_BASE_ID=appXXXXXXXXXXXXXX
 
-# Optional: Customize table/view names (defaults shown)
-AIRTABLE_PEOPLE_TABLE=People
-AIRTABLE_PEOPLE_VIEW=Grid view
-AIRTABLE_PROJECTS_TABLE=Projects
-AIRTABLE_PROJECTS_VIEW=Grid view
+# Encryption key for securing tokens (REQUIRED for security!)
+ENCRYPTION_KEY=your_generated_32_char_key_here
+
+# Optional: Customize table names (defaults shown)
+AIRTABLE_AUTH_TABLE=auth
+AIRTABLE_PEOPLE_TABLE=people
+AIRTABLE_PROJECTS_TABLE=projects
 ```
 
-### 6. Remove Old Environment Variables
+**⚠️ Important:** Keep your `ENCRYPTION_KEY` secret and never commit it to git!
+
+### 8. Remove Old Environment Variables
 
 You can now remove these from your `.env` (they're no longer used):
 
 - ~~`CUSTOM_PEOPLE_LIST`~~
 - ~~`BASECAMP_SLACK_MAPPINGS`~~
 
-### 7. Restart Your Server
+### 9. First Time Setup
+
+All users will need to authenticate with Basecamp when you first start using Airtable authentication. The bot will guide them through the OAuth flow, and credentials will be securely stored in Airtable with encryption.
+
+### 10. Restart Your Server
 
 ```bash
 npm start
+```
+
+You should see:
+
+```
+✅ Using Airtable for authentication storage
+Loaded X authentication(s) from Airtable
 ```
 
 ## ✅ Verify Setup
@@ -131,11 +176,21 @@ Watch the server logs on startup:
 
 ## 🎯 Benefits
 
+### Data Management:
+
 ✅ **No more JSON in environment variables!**  
 ✅ **Easy to update** - just edit Airtable, no deployment needed  
-✅ **Cached for 5 minutes** - fast and efficient  
+✅ **Cached for performance** - fast and efficient (1-5 minute cache)  
 ✅ **Automatic cache refresh** - always up to date  
 ✅ **Fallback to cache** - works even if Airtable is temporarily down
+
+### Security:
+
+✅ **Encrypted tokens** - OAuth tokens encrypted with AES-256  
+✅ **Centralized auth** - All Basecamp credentials in one secure place  
+✅ **Airtable security** - Benefit from Airtable's enterprise-grade security  
+✅ **Token scoping** - Personal Access Tokens with granular permissions  
+✅ **No local database** - No `auth.db` file to worry about
 
 ## 🔄 Cache Management
 
@@ -187,6 +242,13 @@ To force a refresh:
 - Check you have the project mapped in Airtable
 - Check the Slack Channel ID is correct
 - Set `SLACK_DEFAULT_CHANNEL` as fallback
+
+**"User authentication not working"**
+
+- Check you have the `auth` table created in Airtable
+- Check the Airtable token has `data.records:write` scope
+- Check `ENCRYPTION_KEY` is set (32+ characters recommended)
+- Ask user to re-authenticate by typing `/start` in the bot
 
 ## 🎉 You're Done!
 

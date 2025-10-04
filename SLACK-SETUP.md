@@ -128,7 +128,7 @@ The following endpoints are available for debugging:
 1. Regularly check Slack's API changelog for updates
 2. Monitor your app's logs
 3. Keep dependencies updated
-4. Back up your SQLite database regularly
+4. Manage user data in Airtable (see AIRTABLE-SETUP.md)
 
 ## 10. Support
 

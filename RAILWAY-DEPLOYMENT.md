@@ -128,8 +128,9 @@ railway variables
 
 - Never commit `.env` files to version control
 - Use Railway's environment variable management
-- The SQLite database (`auth.db`) persists across deployments
+- Authentication data is stored securely in Airtable with encryption (see AIRTABLE-SETUP.md)
 - Webhook URLs must use `https://` in production
+- Keep your `ENCRYPTION_KEY` secret and never commit it to git
 
 ## 📞 Support
 

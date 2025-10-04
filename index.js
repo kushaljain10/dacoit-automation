@@ -7,7 +7,7 @@ const customParseFormat = require("dayjs/plugin/customParseFormat");
 const fs = require("fs");
 const path = require("path");
 const { processTaskWithAI } = require("./ai");
-const { SQLiteAuthStore } = require("./store");
+const { AirtableAuthStore } = require("./airtable-store");
 const { bc } = require("./basecamp");
 const { sendToSlack } = require("./slack-notifications");
 const {
@@ -60,9 +60,18 @@ bot.use(async (ctx, next) => {
   await next();
 });
 
-// Initialize SQLite store
-const store = new SQLiteAuthStore();
-console.log(`Loaded ${store.size()} authentication(s) from persistent storage`);
+// Initialize Airtable auth store
+const store = new AirtableAuthStore();
+console.log("✅ Using Airtable for authentication storage");
+// Get count asynchronously
+store
+  .size()
+  .then((count) => {
+    console.log(`Loaded ${count} authentication(s) from Airtable`);
+  })
+  .catch((err) => {
+    console.error("Error getting auth count:", err.message);
+  });
 
 /** ------------ Helpers ------------ **/
 // Use shared Basecamp client
@@ -74,7 +83,7 @@ const requireAuth = async (ctx, next) => {
   if (!whitelist.has(uid)) {
     return ctx.reply("Sorry, you are not authorised to use this bot.");
   }
-  const saved = store.get(uid);
+  const saved = await store.get(uid);
   if (!saved) {
     const link = `https://launchpad.37signals.com/authorization/new?type=web_server&client_id=${BASECAMP_CLIENT_ID}&redirect_uri=${encodeURIComponent(
       REDIRECT_URI
@@ -315,7 +324,7 @@ Is this correct?`;
 };
 
 const askProject = async (ctx, page = 0) => {
-  const { access, accountId } = store.get(String(ctx.from.id));
+  const { access, accountId } = await store.get(String(ctx.from.id));
 
   try {
     const { data: projects } = await bc(access).get(
@@ -395,7 +404,7 @@ const askProject = async (ctx, page = 0) => {
 };
 
 const askAssignee = async (ctx, page = 0) => {
-  const { access, accountId } = store.get(String(ctx.from.id));
+  const { access, accountId } = await store.get(String(ctx.from.id));
   const projectId = ctx.session.flow.selections.projectId;
 
   try {
@@ -568,7 +577,7 @@ const createBatchTasks = async (ctx, processedTasks, basecampPeople) => {
       // Verify assignee is part of the project if assigneeId is provided
       if (processedTask.assigneeId) {
         try {
-          const { access, accountId } = store.get(String(ctx.from.id));
+          const { access, accountId } = await store.get(String(ctx.from.id));
           const { data: projectPeople } = await bc(access).get(
             `https://3.basecampapi.com/${accountId}/projects/${processedTask.projectId}/people.json`
           );
@@ -736,7 +745,7 @@ const createTodoList = async (
   todosetId,
   name = "To-Do List"
 ) => {
-  const { access, accountId } = store.get(String(ctx.from.id));
+  const { access, accountId } = await store.get(String(ctx.from.id));
 
   try {
     const payload = {
@@ -765,7 +774,7 @@ const createTodoList = async (
 };
 
 const chooseDefaultTodoList = async (ctx, projectId) => {
-  const { access, accountId } = store.get(String(ctx.from.id));
+  const { access, accountId } = await store.get(String(ctx.from.id));
 
   try {
     console.log(
@@ -843,7 +852,7 @@ const createTodo = async (
   ctx,
   { projectId, todoListId, title, description, assigneeId, dueOn }
 ) => {
-  const { access, accountId } = store.get(String(ctx.from.id));
+  const { access, accountId } = await store.get(String(ctx.from.id));
 
   console.log(`\n🔵 createTodo called with:`, {
     title,
@@ -997,7 +1006,7 @@ bot.on("text", requireAuth, async (ctx) => {
 
     try {
       // Fetch projects and people to provide context to AI
-      const { access, accountId } = store.get(String(ctx.from.id));
+      const { access, accountId } = await store.get(String(ctx.from.id));
       let context = { projects: [], people: [] };
 
       try {
@@ -1621,7 +1630,7 @@ app.get("/oauth/callback", async (req, res) => {
     const { code, state } = req.query; // state carries telegram user id
     const auth = await handleBasecampOAuth(code, REDIRECT_URI);
 
-    store.set(String(state), {
+    await store.set(String(state), {
       access: auth.access_token,
       refresh: auth.refresh_token,
       accountId: auth.accountId,
@@ -1710,9 +1719,9 @@ app.post("/basecamp/webhook", async (req, res) => {
     let todoDetails = null;
     if (event.kind === "todo_created" && event.recording.url) {
       try {
-        const users = store.getAllUsers();
+        const users = await store.getAllUsers();
         if (users.length > 0) {
-          const auth = store.get(users[0]);
+          const auth = await store.get(users[0]);
           if (auth) {
             const { data: fetchedTodo } = await bc(auth.access).get(
               event.recording.url
@@ -1834,7 +1843,7 @@ app.get("/oauth/callback/slack", async (req, res) => {
         accountId: auth.accountId,
       });
 
-      store.set(String(state), {
+      await store.set(String(state), {
         access: auth.access_token,
         refresh: auth.refresh_token,
         accountId: auth.accountId,
@@ -1910,7 +1919,7 @@ app.get("/health", (req, res) => {
     webhook_url:
       process.env.WEBHOOK_URL ||
       `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`,
-    sqlite_db: fs.existsSync(path.join(__dirname, "auth.db")),
+    auth_store: "airtable",
   });
 });
 
@@ -1955,19 +1964,19 @@ app.get("/test", (req, res) => {
     webhook_configured: !!(
       process.env.WEBHOOK_URL || process.env.RAILWAY_PUBLIC_DOMAIN
     ),
-    database_connected: store && store.db !== null,
+    auth_store_connected: !!store,
   });
 });
 
 // Debug endpoint to list all projects
 app.get("/debug/projects", async (req, res) => {
   try {
-    const users = store.getAllUsers();
+    const users = await store.getAllUsers();
     if (!users.length) {
       return res.status(400).json({ error: "No authenticated users found" });
     }
 
-    const auth = store.get(users[0]);
+    const auth = await store.get(users[0]);
     if (!auth) {
       return res.status(400).json({ error: "No valid authentication found" });
     }
@@ -2020,7 +2029,7 @@ app.get("/debug/project-people/:projectId", async (req, res) => {
       return res.status(400).json({ error: "No authenticated users found" });
     }
 
-    const auth = store.get(users[0]);
+    const auth = await store.get(users[0]);
     if (!auth) {
       return res.status(400).json({ error: "No valid authentication found" });
     }
@@ -2075,12 +2084,12 @@ app.get("/debug/project-people/:projectId", async (req, res) => {
 // Debug endpoint to see raw Basecamp user data
 app.get("/debug/basecamp-users", async (req, res) => {
   try {
-    const users = store.getAllUsers();
+    const users = await store.getAllUsers();
     if (!users.length) {
       return res.status(400).json({ error: "No authenticated users found" });
     }
 
-    const auth = store.get(users[0]);
+    const auth = await store.get(users[0]);
     if (!auth) {
       return res.status(400).json({ error: "No valid authentication found" });
     }
@@ -2123,12 +2132,12 @@ app.get("/debug/basecamp-users", async (req, res) => {
 // Debug endpoint to compare Airtable people with Basecamp
 app.get("/debug/people-matching", async (req, res) => {
   try {
-    const users = store.getAllUsers();
+    const users = await store.getAllUsers();
     if (!users.length) {
       return res.status(400).json({ error: "No authenticated users found" });
     }
 
-    const auth = store.get(users[0]);
+    const auth = await store.get(users[0]);
     if (!auth) {
       return res.status(400).json({ error: "No valid authentication found" });
     }
@@ -2207,16 +2216,16 @@ app.get("/debug/people-matching", async (req, res) => {
 });
 
 // Check authentication status
-app.get("/debug/auth-status", (req, res) => {
+app.get("/debug/auth-status", async (req, res) => {
   try {
     // Get all users and their auth data
-    const users = store.getAllUsers();
+    const users = await store.getAllUsers();
     console.log("Found users:", users);
 
-    const auths = users
-      .map((userId) => {
+    const auths = await Promise.all(
+      users.map(async (userId) => {
         console.log("Checking auth for user:", userId);
-        const auth = store.get(userId);
+        const auth = await store.get(userId);
         console.log("Auth data:", auth);
 
         if (!auth) {
@@ -2234,14 +2243,16 @@ app.get("/debug/auth-status", (req, res) => {
           hasValidTokens: !!(auth.access && auth.refresh),
         };
       })
-      .filter((auth) => auth); // Remove any null entries
+    );
+
+    const validAuths = auths.filter((auth) => auth); // Remove any null entries
 
     res.json({
       status: "ok",
       authenticated_users: users.length,
       valid_auths: auths.filter((a) => a.hasValidTokens).length,
       auth_details: auths,
-      database_connected: store && store.db !== null,
+      auth_store_connected: !!store,
       timestamp: new Date().toISOString(),
       help:
         auths.length === 0
@@ -2327,7 +2338,7 @@ app.post("/debug/setup-basecamp-webhooks", async (req, res) => {
       });
     }
 
-    const auth = store.get(users[0]);
+    const auth = await store.get(users[0]);
     if (!auth) {
       return res.status(400).json({ error: "No valid authentication found" });
     }
@@ -2351,12 +2362,12 @@ app.post("/debug/setup-basecamp-webhooks", async (req, res) => {
 app.get("/debug/list-basecamp-webhooks/:projectId", async (req, res) => {
   try {
     const { projectId } = req.params;
-    const users = store.getAllUsers();
+    const users = await store.getAllUsers();
     if (!users.length) {
       return res.status(400).json({ error: "No authenticated users found" });
     }
 
-    const auth = store.get(users[0]);
+    const auth = await store.get(users[0]);
     if (!auth) {
       return res.status(400).json({ error: "No valid authentication found" });
     }

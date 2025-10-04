@@ -1,6 +1,6 @@
 const { App } = require("@slack/bolt");
 const { processTaskWithAI } = require("./ai");
-const { SQLiteAuthStore } = require("./store");
+const { AirtableAuthStore } = require("./airtable-store");
 const { bc } = require("./basecamp");
 
 // Initialize Slack app with your credentials
@@ -12,12 +12,12 @@ const slackApp = new App({
 });
 
 // Store for Basecamp auth tokens, shared with Telegram bot
-const store = new SQLiteAuthStore();
+const store = new AirtableAuthStore();
 
 // Middleware to check Basecamp authentication
 const requireAuth = async ({ client, body, next }) => {
   const userId = body.user_id;
-  const auth = store.get(userId);
+  const auth = await store.get(userId);
 
   if (!auth) {
     try {
@@ -131,7 +131,7 @@ slackApp.view("task_modal", async ({ ack, body, view, client }) => {
     const processedTask = await processTaskWithAI(description);
 
     // Get user's Basecamp auth
-    const auth = store.get(userId);
+    const auth = await store.get(userId);
     const { accountId, access } = auth;
 
     // Fetch projects
