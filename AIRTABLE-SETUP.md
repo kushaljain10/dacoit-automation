@@ -50,7 +50,22 @@ Create a table named `people` with these columns:
 - Visit: `http://localhost:3000/debug/basecamp-users`
 - Find the user and copy their `id`
 
-### 4. Create projects Table
+### 4. Create task_messages Table (for Slack threading)
+
+Create a table named `task_messages` with these columns:
+
+| Column Name          | Type             | Description                 | Example             |
+| -------------------- | ---------------- | --------------------------- | ------------------- |
+| **basecamp_task_id** | Number           | Basecamp todo ID            | `12345678`          |
+| **slack_message_ts** | Single line text | Slack message timestamp     | `1234567890.123456` |
+| **slack_channel_id** | Single line text | Slack channel ID            | `C12345ABCDE`       |
+| **project_id**       | Number           | Basecamp project ID         | `44141016`          |
+| **task_title**       | Single line text | Task title (for reference)  | `Fix bug`           |
+| **created_at**       | Date             | When the record was created | `2025-10-04`        |
+
+**Purpose:** This table stores the mapping between Basecamp tasks and their corresponding Slack messages. When a task is completed or commented on, the bot will reply to the original Slack thread instead of creating a new message.
+
+### 5. Create projects Table
 
 Create a table named `projects` with these columns:
 
@@ -72,7 +87,7 @@ Create a table named `projects` with these columns:
 - In Slack, right-click on a channel → View channel details
 - Scroll down and copy the Channel ID
 
-### 5. Get Airtable Credentials
+### 6. Get Airtable Credentials
 
 **Personal Access Token:**
 
@@ -92,7 +107,7 @@ Create a table named `projects` with these columns:
 2. Click on your base
 3. You'll see the Base ID in the introduction (starts with `app...`)
 
-### 6. Generate Encryption Key
+### 7. Generate Encryption Key
 
 For security, generate a strong encryption key to protect Basecamp tokens:
 
@@ -106,7 +121,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 Copy the output - you'll need it for the next step.
 
-### 7. Update Environment Variables
+### 8. Update Environment Variables
 
 Add these to your `.env` file:
 
@@ -122,22 +137,23 @@ ENCRYPTION_KEY=your_generated_32_char_key_here
 AIRTABLE_AUTH_TABLE=auth
 AIRTABLE_PEOPLE_TABLE=people
 AIRTABLE_PROJECTS_TABLE=projects
+AIRTABLE_TASK_MESSAGES_TABLE=task_messages
 ```
 
 **⚠️ Important:** Keep your `ENCRYPTION_KEY` secret and never commit it to git!
 
-### 8. Remove Old Environment Variables
+### 9. Remove Old Environment Variables
 
 You can now remove these from your `.env` (they're no longer used):
 
 - ~~`CUSTOM_PEOPLE_LIST`~~
 - ~~`BASECAMP_SLACK_MAPPINGS`~~
 
-### 9. First Time Setup
+### 10. First Time Setup
 
 All users will need to authenticate with Basecamp when you first start using Airtable authentication. The bot will guide them through the OAuth flow, and credentials will be securely stored in Airtable with encryption.
 
-### 10. Restart Your Server
+### 11. Restart Your Server
 
 ```bash
 npm start
@@ -191,6 +207,13 @@ Watch the server logs on startup:
 ✅ **Airtable security** - Benefit from Airtable's enterprise-grade security  
 ✅ **Token scoping** - Personal Access Tokens with granular permissions  
 ✅ **No local database** - No `auth.db` file to worry about
+
+### Slack Threading:
+
+✅ **Organized conversations** - Task updates appear in threads  
+✅ **Context preservation** - All updates for a task stay together  
+✅ **Less noise** - Completions and comments don't clutter the channel  
+✅ **Reply broadcast** - Thread updates also appear in main channel
 
 ## 🔄 Cache Management
 

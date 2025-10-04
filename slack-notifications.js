@@ -62,7 +62,7 @@ const formatBasecampUpdate = (type, data) => {
             type: "header",
             text: {
               type: "plain_text",
-              text: "🆕 New Task Created",
+              text: "🆕 Task Created",
               emoji: true,
             },
           },
@@ -241,16 +241,34 @@ const formatBasecampUpdate = (type, data) => {
 };
 
 // Send notification to Slack
-const sendToSlack = async (channelId, type, data) => {
+const sendToSlack = async (channelId, type, data, threadTs = null) => {
   try {
     const message = formatBasecampUpdate(type, data);
-    await slack.chat.postMessage({
+    const postParams = {
       channel: channelId,
       ...message,
-    });
+    };
+
+    // If threadTs is provided, reply to that thread
+    if (threadTs) {
+      postParams.thread_ts = threadTs;
+      postParams.reply_broadcast = true; // Also send to channel
+      console.log(`Replying to thread ${threadTs} in channel ${channelId}`);
+    }
+
+    const response = await slack.chat.postMessage(postParams);
+
     console.log(
-      `Successfully sent ${type} notification to Slack channel ${channelId}`
+      `Successfully sent ${type} notification to Slack channel ${channelId}${
+        threadTs ? ` (thread: ${threadTs})` : ""
+      }`
     );
+
+    // Return the message timestamp (used for thread replies)
+    return {
+      ts: response.ts,
+      channel: response.channel,
+    };
   } catch (error) {
     console.error("Error sending message to Slack:", error);
     throw error;

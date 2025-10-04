@@ -14,7 +14,12 @@ const {
   setupWebhooksForAllProjects,
   listProjectWebhooks,
 } = require("./basecamp-webhooks");
-const { fetchPeople, fetchProjectMappings } = require("./airtable");
+const {
+  fetchPeople,
+  fetchProjectMappings,
+  storeTaskMessage,
+  getTaskMessage,
+} = require("./airtable");
 require("dotenv").config();
 dayjs.extend(customParseFormat);
 
@@ -1878,10 +1883,51 @@ app.post("/basecamp/webhook", async (req, res) => {
     // Send to Slack based on event type
     switch (event.kind) {
       case "todo_created":
+        // Send new task notification and store the message mapping
+        const createResponse = await sendToSlack(channelId, event.kind, data);
+
+        // Store the message mapping for future thread replies
+        if (createResponse && todoDetails) {
+          await storeTaskMessage(
+            todoDetails.id, // Basecamp task ID
+            createResponse.ts, // Slack message timestamp (thread_ts)
+            createResponse.channel, // Slack channel ID
+            todoDetails.bucket?.id || event.recording.bucket?.id, // Project ID
+            todoDetails.title || event.recording.title // Task title
+          );
+        }
+        break;
+
       case "todo_completed":
       case "comment_created":
-        await sendToSlack(channelId, event.kind, data);
+        // Try to find the original message to reply to thread
+        const taskId = event.recording.id || todoDetails?.id;
+        let threadInfo = null;
+
+        if (taskId) {
+          threadInfo = await getTaskMessage(taskId);
+        }
+
+        if (threadInfo && threadInfo.thread_ts) {
+          // Reply to the original thread
+          console.log(
+            `Found original message, replying to thread for ${event.kind}`
+          );
+          await sendToSlack(
+            threadInfo.channel_id,
+            event.kind,
+            data,
+            threadInfo.thread_ts // This makes it a thread reply
+          );
+        } else {
+          // No thread found, send as new message
+          console.log(
+            `No thread found for task ${taskId}, sending as new message`
+          );
+          await sendToSlack(channelId, event.kind, data);
+        }
         break;
+
       default:
         console.log(`Unhandled Basecamp event type: ${event.kind}`);
     }
