@@ -930,8 +930,23 @@ bot.start(requireAuth, async (ctx) => {
   console.log("🚀 Start command received from:", ctx.from);
   ctx.session ??= {};
   await resetFlow(ctx);
-  ctx.session.flow.step = 1;
-  await askTaskDescription(ctx);
+
+  await ctx.reply(
+    "👋 *Welcome to Basecamp Task Bot!*\n\n" +
+      "I help you create tasks in Basecamp using AI-powered processing.\n\n" +
+      "🚀 *How to use:*\n" +
+      "• Simply send or forward me any message describing a task\n" +
+      "• I'll automatically process it and create the task(s) for you\n" +
+      "• You can create single or multiple tasks at once\n\n" +
+      "📝 *Examples:*\n" +
+      "• `Fix login bug - assign to John, due tomorrow`\n" +
+      "• `Update documentation\\nReview PR #123\\nTest new feature`\n\n" +
+      "💡 *Commands:*\n" +
+      "• /stop - Cancel current task creation\n" +
+      "• /help - Show help message\n\n" +
+      "_Just send me a message to get started!_",
+    { parse_mode: "Markdown" }
+  );
 });
 
 bot.command("stop", requireAuth, async (ctx) => {
@@ -944,7 +959,7 @@ bot.command("stop", requireAuth, async (ctx) => {
   await ctx.reply(
     "🛑 *Conversation stopped.*\n\n" +
       "Your current task creation has been cancelled and all data cleared.\n\n" +
-      "Use /start to begin a new task creation process.",
+      "Just send me a new message to create another task!",
     { parse_mode: "Markdown" }
   );
 });
@@ -953,11 +968,22 @@ bot.command("help", requireAuth, async (ctx) => {
   console.log("❓ Help command received from:", ctx.from);
 
   await ctx.reply(
-    "🤖 *Basecamp Task Bot Commands*\n\n" +
-      "*/start* - Begin creating a new task\n" +
-      "*/stop* - Cancel current conversation and reset\n" +
-      "*/help* - Show this help message\n\n" +
-      "_This bot helps you create tasks in Basecamp using AI-powered processing._",
+    "🤖 *Basecamp Task Bot Help*\n\n" +
+      "🎯 *Creating Tasks:*\n" +
+      "Simply send or forward me any message! No commands needed.\n\n" +
+      "📝 *Examples:*\n" +
+      "• `Fix the login bug - assign to Sarah, due Friday`\n" +
+      "• `Update docs\\nReview code\\nDeploy to staging` (multiple tasks)\n\n" +
+      "🤖 *AI Features:*\n" +
+      "• Automatically detects project names\n" +
+      "• Identifies assignees by name\n" +
+      "• Parses due dates (e.g., 'tomorrow', 'next Monday', '2025-10-15')\n" +
+      "• Handles single or multiple tasks in one message\n\n" +
+      "⚙️ *Commands:*\n" +
+      "• /start - Show welcome message\n" +
+      "• /stop - Cancel current task creation\n" +
+      "• /help - Show this help message\n\n" +
+      "_This bot uses AI to make task creation effortless!_",
     { parse_mode: "Markdown" }
   );
 });
@@ -978,27 +1004,16 @@ bot.on("text", requireAuth, async (ctx) => {
   ctx.session.flow ??= { step: 0, selections: {} };
   let f = ctx.session.flow;
 
-  // Show welcome message if user hasn't started the flow
-  if (!f.step) {
-    await ctx.reply(
-      "👋 *Welcome to Basecamp Task Bot!*\n\n" +
-        "I help you create tasks in Basecamp using AI-powered processing.\n\n" +
-        "🚀 *How to get started:*\n" +
-        "• Use /start to begin creating a new task\n" +
-        "• Use /stop to cancel and reset anytime\n" +
-        "• Use /help to see all available commands\n\n" +
-        "_Just send me a task description and I'll help you organize it!_",
-      { parse_mode: "Markdown" }
-    );
+  const text = ctx.message.text?.trim();
 
+  // If no active flow or at step 0, treat any message as task creation request
+  if (!f.step || f.step === 0) {
+    console.log("No active flow - treating message as new task request");
     await resetFlow(ctx);
     ctx.session.flow.step = 1;
-    f = ctx.session.flow; // Update reference after reset
-    await askTaskDescription(ctx);
-    return;
+    f = ctx.session.flow;
+    // Don't return - continue to process the message below
   }
-
-  const text = ctx.message.text?.trim();
 
   if (f.step === 1) {
     // Process the task description with AI
