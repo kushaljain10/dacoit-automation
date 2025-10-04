@@ -184,7 +184,7 @@ const processTaskData = async (
 
     if (matchedPerson) {
       result.assigneeEmail = matchedPerson.email;
-      result.slackUserId = matchedPerson.slack_user_id;
+      result.slackUserId = matchedPerson.slack_id;
 
       console.log(
         `✅ AI matched assignee: ${matchedPerson.name} (${matchedPerson.email})`
@@ -1022,7 +1022,7 @@ bot.on("text", requireAuth, async (ctx) => {
           context.people = airtablePeople.map((p) => ({
             name: p.name,
             email: p.email,
-            slack_user_id: p.slack_id,
+            slack_id: p.slack_id,
             basecamp_id: p.basecamp_id, // Include Basecamp ID if provided
           }));
           const withBasecampIds = context.people.filter(
@@ -1742,7 +1742,7 @@ app.post("/basecamp/webhook", async (req, res) => {
       }
     }
 
-    // Enrich assignees with slack_user_id from Airtable
+    // Enrich assignees with slack_id from Airtable
     let enrichedAssignees = todoDetails?.assignees || [];
     if (enrichedAssignees.length > 0) {
       try {
@@ -1785,14 +1785,14 @@ app.post("/basecamp/webhook", async (req, res) => {
 
           return {
             ...assignee,
-            slack_user_id: airtablePerson?.slack_user_id || null,
+            slack_id: airtablePerson?.slack_id || null,
           };
         });
         console.log(
-          "Enriched assignees with Slack user IDs from Airtable:",
+          "Enriched assignees with Slack IDs from Airtable:",
           enrichedAssignees.map((a) => ({
             name: a.name,
-            slack_user_id: a.slack_user_id,
+            slack_id: a.slack_id,
           }))
         );
       } catch (error) {
@@ -2202,7 +2202,7 @@ app.get("/debug/people-matching", async (req, res) => {
         airtable_name: airPerson.name,
         airtable_email: airPerson.email,
         airtable_basecamp_id: airPerson.basecamp_id,
-        slack_user_id: airPerson.slack_user_id,
+        slack_id: airPerson.slack_id,
         basecamp_id: basecampMatch?.id || null,
         basecamp_name: basecampMatch?.name || null,
         basecamp_email: basecampMatch?.email_address || null,

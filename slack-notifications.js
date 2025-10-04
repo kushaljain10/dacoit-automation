@@ -17,16 +17,20 @@ const formatBasecampUpdate = (type, data) => {
       ) {
         assigneesText = data.assignees
           .map((a) => {
-            // If we have a slack_user_id, use Slack mention format
-            if (a.slack_user_id) {
-              return `<@${a.slack_user_id}>`;
+            // If we have a slack_id, use Slack mention format
+            if (a.slack_id) {
+              console.log(
+                `Using Slack mention for ${a.name}: <@${a.slack_id}>`
+              );
+              return `<@${a.slack_id}>`;
             }
+            console.log(`No slack_id found for ${a.name}, using name instead`);
             return a.name || a.email_address || "Unknown";
           })
           .join(", ");
-      } else if (data.slack_user_id) {
-        // Use slack_user_id from webhook data if available
-        assigneesText = `<@${data.slack_user_id}>`;
+      } else if (data.slack_id) {
+        // Use slack_id from webhook data if available
+        assigneesText = `<@${data.slack_id}>`;
       }
 
       console.log("Final assignees text for Slack:", assigneesText);
