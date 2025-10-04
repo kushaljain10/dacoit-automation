@@ -1803,6 +1803,52 @@ app.post("/basecamp/webhook", async (req, res) => {
       }
     }
 
+    // Enrich creator with slack_id from Airtable
+    let creatorSlackId = null;
+    if (event.creator) {
+      try {
+        const airtablePeople = await fetchPeople();
+
+        // First try to match by Basecamp ID
+        let airtablePerson = airtablePeople.find(
+          (ap) => ap.basecamp_id && ap.basecamp_id == event.creator.id
+        );
+
+        // Fall back to email or name matching if basecamp_id match failed
+        if (!airtablePerson && event.creator.email_address) {
+          airtablePerson = airtablePeople.find(
+            (ap) =>
+              ap.email &&
+              ap.email.toLowerCase() ===
+                event.creator.email_address.toLowerCase()
+          );
+        }
+
+        if (!airtablePerson) {
+          // Last resort: try name matching
+          airtablePerson = airtablePeople.find(
+            (ap) => ap.name.toLowerCase() === event.creator.name.toLowerCase()
+          );
+        }
+
+        if (airtablePerson) {
+          creatorSlackId = airtablePerson.slack_id;
+          console.log(
+            `✅ Matched creator ${event.creator.name} with Slack ID: ${creatorSlackId}`
+          );
+        } else {
+          console.log(
+            `⚠️ No Airtable match found for creator ${event.creator.name}`
+          );
+        }
+      } catch (error) {
+        console.error(
+          "Error enriching creator with Slack ID from Airtable:",
+          error.message
+        );
+      }
+    }
+
     // Format the event data
     const data = {
       title: todoDetails?.title || event.recording.title,
@@ -1812,6 +1858,7 @@ app.post("/basecamp/webhook", async (req, res) => {
         event.recording.content,
       project_name: event.recording.bucket.name,
       creator_name: event.creator.name,
+      creator_slack_id: creatorSlackId,
       url: event.recording.app_url,
       due_date: todoDetails?.due_on || event.recording.due_on || null,
       completer_name: event.recording.completer?.name,

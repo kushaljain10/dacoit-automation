@@ -102,6 +102,17 @@ const formatBasecampUpdate = (type, data) => {
             ],
           },
           {
+            type: "context",
+            elements: [
+              {
+                type: "mrkdwn",
+                text: data.creator_slack_id
+                  ? `cc: <@${data.creator_slack_id}>`
+                  : `cc: ${data.creator_name}`,
+              },
+            ],
+          },
+          {
             type: "actions",
             elements: [
               {
