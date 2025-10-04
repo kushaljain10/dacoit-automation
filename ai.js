@@ -1,4 +1,5 @@
 const axios = require("axios");
+require("dotenv").config();
 
 const OPENROUTER_API_URL =
   process.env.OPENROUTER_API_URL ||
@@ -16,7 +17,7 @@ For SINGLE TASK, extract:
 2. A detailed description
 3. Project name if mentioned (match against available projects)
 4. Assignee names if mentioned (match against available people)
-5. Due date if mentioned
+5. Due date if mentioned (can be "today", "tomorrow", specific date, or "in X days")
 
 For MULTIPLE TASKS, the format will typically be:
 "Assignee Name - Task 1 for Project A. Task 2 for Project B.
@@ -50,7 +51,7 @@ IMPORTANT: Return ONLY a valid JSON object without any markdown formatting, code
   "description": "Task description",
   "project_name": "Project name or null",
   "assignee_names": ["Person name"] or [],
-  "due_date": "Date or null"
+  "due_date": "Date (can be 'today', 'tomorrow', 'YYYY-MM-DD', or 'in X days') or null"
 }
 
 Return format for MULTIPLE tasks:
@@ -62,14 +63,14 @@ Return format for MULTIPLE tasks:
       "description": "Task 1 description",
       "project_name": "Project name or null",
       "assignee_names": ["Person name"],
-      "due_date": "Date or null"
+      "due_date": "Date (can be 'today', 'tomorrow', 'YYYY-MM-DD', or 'in X days') or null"
     },
     {
       "title": "Task 2 title",
       "description": "Task 2 description",
       "project_name": "Project name or null",
       "assignee_names": ["Person name"],
-      "due_date": "Date or null"
+      "due_date": "Date (can be 'today', 'tomorrow', 'YYYY-MM-DD', or 'in X days') or null"
     }
   ]
 }

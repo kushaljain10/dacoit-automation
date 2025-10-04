@@ -14,6 +14,7 @@ const {
   setupWebhooksForAllProjects,
   listProjectWebhooks,
 } = require("./basecamp-webhooks");
+const { fetchPeople, fetchProjectMappings } = require("./airtable");
 require("dotenv").config();
 dayjs.extend(customParseFormat);
 
@@ -180,65 +181,64 @@ const processTaskData = async (
         `✅ AI matched assignee: ${matchedPerson.name} (${matchedPerson.email})`
       );
 
-      // Now find the Basecamp user ID by email
-      try {
-        // Fetch Basecamp people only if not already provided
-        if (!basecampPeople) {
-          const { data } = await bc(access).get(
-            `https://3.basecampapi.com/${accountId}/people.json`
-          );
-          basecampPeople = data;
-          console.log(
-            `Fetched ${basecampPeople.length} Basecamp people for matching`
-          );
-        }
-
+      // Check if Airtable has basecamp_id directly
+      if (matchedPerson.basecamp_id) {
+        result.assigneeId = matchedPerson.basecamp_id;
+        console.log(`✅ Using Basecamp ID from Airtable: ${result.assigneeId}`);
+        console.log(`   assigneeEmail: ${result.assigneeEmail}`);
+        console.log(`   assigneeId: ${result.assigneeId}`);
+        console.log(`   ⚡ Skipped email matching - using direct ID mapping`);
+      } else {
+        // Fallback: Find Basecamp user ID by email matching
         console.log(
-          `Looking for Basecamp user with email: ${matchedPerson.email}`
-        );
-        console.log(
-          `Available Basecamp emails:`,
-          basecampPeople.map((bp) => bp.email_address)
+          `⚠️ No basecamp_id in Airtable for ${matchedPerson.name}, falling back to email matching`
         );
 
-        console.log(`\n🔍 DETAILED EMAIL MATCHING:`);
-        console.log(`   Looking for: "${matchedPerson.email.toLowerCase()}"`);
-        console.log(`   In Basecamp emails:`);
-        basecampPeople.forEach((bp, idx) => {
-          const match =
-            bp.email_address.toLowerCase() ===
-            matchedPerson.email.toLowerCase();
-          console.log(
-            `   ${idx + 1}. "${bp.email_address.toLowerCase()}" ${
-              match ? "✅ MATCH!" : ""
-            }`
-          );
-        });
+        try {
+          // Fetch Basecamp people only if not already provided
+          if (!basecampPeople) {
+            const { data } = await bc(access).get(
+              `https://3.basecampapi.com/${accountId}/people.json`
+            );
+            basecampPeople = data;
+            console.log(
+              `Fetched ${basecampPeople.length} Basecamp people for ID matching`
+            );
+          }
 
-        const basecampPerson = basecampPeople.find(
-          (bp) =>
-            bp.email_address.toLowerCase() === matchedPerson.email.toLowerCase()
-        );
-        if (basecampPerson) {
-          result.assigneeId = basecampPerson.id;
           console.log(
-            `\n✅ EMAIL MATCHED! Basecamp user ID: ${basecampPerson.id} (${basecampPerson.name})`
+            `Looking for Basecamp user with email: ${matchedPerson.email}`
           );
-          console.log(`   assigneeEmail set to: ${result.assigneeEmail}`);
-          console.log(`   assigneeId set to: ${result.assigneeId}`);
-        } else {
+
+          const basecampPerson = basecampPeople.find(
+            (bp) =>
+              bp.email_address &&
+              bp.email_address.toLowerCase() ===
+                matchedPerson.email.toLowerCase()
+          );
+
+          if (basecampPerson) {
+            result.assigneeId = basecampPerson.id;
+            console.log(
+              `✅ EMAIL MATCHED! Basecamp user ID: ${basecampPerson.id} (${basecampPerson.name})`
+            );
+            console.log(
+              `   Recommendation: Add basecamp_id ${basecampPerson.id} to Airtable for ${matchedPerson.name}`
+            );
+          } else {
+            console.error(
+              `❌ EMAIL NOT FOUND! No Basecamp user with email: "${matchedPerson.email}"`
+            );
+            console.error(
+              `   Add basecamp_id to Airtable to avoid email matching`
+            );
+          }
+        } catch (error) {
           console.error(
-            `\n❌ EMAIL NOT FOUND! No Basecamp user with email: "${matchedPerson.email}"`
+            "Error fetching Basecamp people for email match:",
+            error.message
           );
-          console.error(`   assigneeEmail: ${result.assigneeEmail}`);
-          console.error(`   assigneeId: ${result.assigneeId || "NOT SET"}`);
-          console.error(`   THE TASK WILL BE CREATED WITHOUT AN ASSIGNEE!`);
         }
-      } catch (error) {
-        console.error(
-          "Error fetching Basecamp people for email match:",
-          error.message
-        );
       }
     } else {
       console.log(`❌ No match found for assignee: "${name}"`);
@@ -276,10 +276,10 @@ const processTaskData = async (
       `\n⚠️⚠️⚠️ CRITICAL ISSUE: Email found but Basecamp ID missing!`
     );
     console.error(
-      `   This means the email in CUSTOM_PEOPLE_LIST doesn't match any Basecamp user`
+      `   This means the email in Airtable doesn't match any Basecamp user`
     );
     console.error(
-      `   Check for typos or case differences in the email address`
+      `   Check for typos or case differences in the email address in Airtable`
     );
   }
 
@@ -502,7 +502,9 @@ const buildAssigneeKeyboard = async (ctx, people, page, isAccountWide) => {
 };
 
 const askDueDate = async (ctx) =>
-  ctx.reply('Due date? (e.g. 2025-10-12 or 12-10-2025 or "in 3 days")');
+  ctx.reply(
+    'Due date? (e.g. 2025-10-12, "today", "tomorrow", "in 3 days", or type "skip" to skip)'
+  );
 
 // Helper functions for batch task processing
 const askBatchTaskInfo = async (ctx) => {
@@ -529,7 +531,7 @@ const askBatchTaskInfo = async (ctx) => {
     await ctx.reply(
       `📋 **Task ${needingInfo.index + 1}:** ${
         task.title
-      }\n\nDue date? (e.g. 2025-10-12 or "in 3 days", or type "skip" to skip)`,
+      }\n\nDue date? (e.g. 2025-10-12, "today", "tomorrow", "in 3 days", or type "skip" to skip)`,
       { parse_mode: "Markdown" }
     );
     f.step = 7; // Batch due date input
@@ -688,6 +690,27 @@ const sendBatchTaskSummary = async (ctx, results) => {
 };
 
 const parseDue = (text) => {
+  // Handle skip option
+  if (text.toLowerCase() === "skip") {
+    return null;
+  }
+
+  // Handle today
+  if (text.toLowerCase() === "today") {
+    return dayjs().format("YYYY-MM-DD");
+  }
+
+  // Handle tomorrow
+  if (text.toLowerCase() === "tomorrow") {
+    return dayjs().add(1, "day").format("YYYY-MM-DD");
+  }
+
+  // Handle "in X days"
+  if (/in\s+(\d+)\s+day/i.test(text)) {
+    const n = parseInt(RegExp.$1, 10);
+    return dayjs().add(n, "day").format("YYYY-MM-DD");
+  }
+
   // Accept several formats and normalise to YYYY-MM-DD (Basecamp uses due_on)
   const formats = [
     "YYYY-MM-DD",
@@ -696,14 +719,12 @@ const parseDue = (text) => {
     "DD/MM/YYYY",
     "D/M/YYYY",
   ];
-  if (/in\s+(\d+)\s+day/i.test(text)) {
-    const n = parseInt(RegExp.$1, 10);
-    return dayjs().add(n, "day").format("YYYY-MM-DD");
-  }
+
   for (const f of formats) {
     const d = dayjs(text, f, true);
     if (d.isValid()) return d.format("YYYY-MM-DD");
   }
+
   // last resort: natural parse (not strict)
   const d2 = dayjs(text);
   return d2.isValid() ? d2.format("YYYY-MM-DD") : null;
@@ -986,31 +1007,28 @@ bot.on("text", requireAuth, async (ctx) => {
         );
         context.projects = projects.map((p) => ({ id: p.id, name: p.name }));
 
-        // Use custom people list from environment variable only
-        if (process.env.CUSTOM_PEOPLE_LIST) {
-          try {
-            const customPeople = JSON.parse(process.env.CUSTOM_PEOPLE_LIST);
-            context.people = customPeople.map((p) => ({
-              name: p.name,
-              email: p.email,
-              slack_user_id: p.slack_user_id,
-            }));
-            console.log(
-              `Using custom people list from environment (${context.people.length} people)`
-            );
-          } catch (parseError) {
-            console.error(
-              "Error parsing CUSTOM_PEOPLE_LIST:",
-              parseError.message
-            );
-            console.warn(
-              "⚠️ CUSTOM_PEOPLE_LIST is invalid, AI will not have people context"
-            );
-            context.people = [];
-          }
-        } else {
+        // Fetch people from Airtable
+        try {
+          const airtablePeople = await fetchPeople();
+          context.people = airtablePeople.map((p) => ({
+            name: p.name,
+            email: p.email,
+            slack_user_id: p.slack_id,
+            basecamp_id: p.basecamp_id, // Include Basecamp ID if provided
+          }));
+          const withBasecampIds = context.people.filter(
+            (p) => p.basecamp_id
+          ).length;
+          console.log(
+            `Fetched people from Airtable (${context.people.length} people, ${withBasecampIds} with basecamp_id)`
+          );
+        } catch (airtableError) {
+          console.error(
+            "Error fetching people from Airtable:",
+            airtableError.message
+          );
           console.warn(
-            "⚠️ CUSTOM_PEOPLE_LIST not set, AI will not have people context"
+            "⚠️ Airtable fetch failed, AI will not have people context"
           );
           context.people = [];
         }
@@ -1018,7 +1036,7 @@ bot.on("text", requireAuth, async (ctx) => {
         console.log("Context for AI:", {
           projects_count: context.projects.length,
           people_count: context.people.length,
-          using_custom_people: !!process.env.CUSTOM_PEOPLE_LIST,
+          source: "Airtable",
         });
       } catch (contextError) {
         console.error("Error fetching context for AI:", contextError.message);
@@ -1219,11 +1237,16 @@ bot.on("text", requireAuth, async (ctx) => {
   if (f.step === 5) {
     // This is now the due date step (after AI processing, confirmation, project, assignee)
     const due = parseDue(text);
-    if (!due)
+
+    // Handle skip - null is valid when user types "skip"
+    if (due === null && text.toLowerCase() !== "skip") {
       return ctx.reply(
-        "Could not parse that date. Try YYYY-MM-DD or DD-MM-YYYY."
+        'Could not parse that date. Try YYYY-MM-DD, "today", "tomorrow", "in 3 days", or type "skip" to skip.'
       );
+    }
+
     f.selections.dueOn = due;
+
     try {
       const { projectId, todoListId, title, description, assigneeId } =
         f.selections;
@@ -1252,16 +1275,19 @@ bot.on("text", requireAuth, async (ctx) => {
       f.selections.batchTasksNeedingInfo[f.selections.currentBatchTaskIndex];
     const taskIndex = needingInfo.index;
 
-    // Allow skipping due date
+    // Parse the due date (handles skip, today, tomorrow, etc.)
+    const due = parseDue(text);
+
+    // Handle skip - null is valid when user types "skip"
+    if (due === null && text.toLowerCase() !== "skip") {
+      return ctx.reply(
+        'Could not parse that date. Try YYYY-MM-DD, "today", "tomorrow", "in 3 days", or type "skip" to skip.'
+      );
+    }
+
     if (text.toLowerCase() === "skip") {
       console.log(`Skipped due date for task ${taskIndex + 1}`);
     } else {
-      const due = parseDue(text);
-      if (!due) {
-        return ctx.reply(
-          "Could not parse that date. Try YYYY-MM-DD or DD-MM-YYYY, or type 'skip' to skip."
-        );
-      }
       // Update the task in batchTasks
       f.selections.batchTasks[taskIndex].dueOn = due;
       console.log(`Set due date for task ${taskIndex + 1}: ${due}`);
@@ -1649,19 +1675,20 @@ app.post("/basecamp/webhook", async (req, res) => {
     // Get channel for this project (with fallback to default channel)
     let channelId = null;
 
-    // Try to get project-specific channel from mapping
-    if (process.env.BASECAMP_SLACK_MAPPINGS) {
-      try {
-        const mappings = JSON.parse(process.env.BASECAMP_SLACK_MAPPINGS);
-        channelId = mappings[projectId];
-        if (channelId) {
-          console.log(
-            `Using project-specific channel ${channelId} for project ${projectId}`
-          );
-        }
-      } catch (error) {
-        console.error("Error parsing BASECAMP_SLACK_MAPPINGS:", error.message);
+    // Try to get project-specific channel from Airtable mapping
+    try {
+      const mappings = await fetchProjectMappings();
+      channelId = mappings[projectId];
+      if (channelId) {
+        console.log(
+          `Using project-specific channel ${channelId} for project ${projectId} (from Airtable)`
+        );
       }
+    } catch (error) {
+      console.error(
+        "Error fetching project mappings from Airtable:",
+        error.message
+      );
     }
 
     // Fallback to default channel if no project-specific mapping found
@@ -1706,28 +1733,28 @@ app.post("/basecamp/webhook", async (req, res) => {
       }
     }
 
-    // Enrich assignees with slack_user_id if custom people list is configured
+    // Enrich assignees with slack_user_id from Airtable
     let enrichedAssignees = todoDetails?.assignees || [];
-    if (process.env.CUSTOM_PEOPLE_LIST && enrichedAssignees.length > 0) {
+    if (enrichedAssignees.length > 0) {
       try {
-        const customPeople = JSON.parse(process.env.CUSTOM_PEOPLE_LIST);
+        const airtablePeople = await fetchPeople();
         enrichedAssignees = enrichedAssignees.map((assignee) => {
-          const customPerson = customPeople.find(
-            (cp) =>
-              cp.email.toLowerCase() === assignee.email_address?.toLowerCase()
+          const airtablePerson = airtablePeople.find(
+            (ap) =>
+              ap.email.toLowerCase() === assignee.email_address?.toLowerCase()
           );
           return {
             ...assignee,
-            slack_user_id: customPerson?.slack_user_id || null,
+            slack_user_id: airtablePerson?.slack_user_id || null,
           };
         });
         console.log(
-          "Enriched assignees with Slack user IDs:",
+          "Enriched assignees with Slack user IDs from Airtable:",
           enrichedAssignees
         );
       } catch (error) {
         console.error(
-          "Error enriching assignees with Slack IDs:",
+          "Error enriching assignees with Slack IDs from Airtable:",
           error.message
         );
       }
@@ -1932,7 +1959,168 @@ app.get("/test", (req, res) => {
   });
 });
 
-// Debug endpoint to compare CUSTOM_PEOPLE_LIST with Basecamp
+// Debug endpoint to list all projects
+app.get("/debug/projects", async (req, res) => {
+  try {
+    const users = store.getAllUsers();
+    if (!users.length) {
+      return res.status(400).json({ error: "No authenticated users found" });
+    }
+
+    const auth = store.get(users[0]);
+    if (!auth) {
+      return res.status(400).json({ error: "No valid authentication found" });
+    }
+
+    // Fetch all projects
+    const { data: projects } = await bc(auth.access).get(
+      `https://3.basecampapi.com/${auth.accountId}/projects.json`
+    );
+
+    // Format the data nicely
+    const projectDetails = projects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      description: project.description,
+      status: project.status,
+      created_at: project.created_at,
+      people_url: `${req.protocol}://${req.get("host")}/debug/project-people/${
+        project.id
+      }`,
+    }));
+
+    res.json({
+      status: "ok",
+      account_id: auth.accountId,
+      total_projects: projects.length,
+      projects: projectDetails,
+      note: "Click on people_url to see who has access to each project",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("Error fetching projects:", error);
+    res.status(error.response?.status || 500).json({
+      error: "Failed to fetch projects",
+      message: error.message,
+    });
+  }
+});
+
+// Debug endpoint to get people in a specific project
+app.get("/debug/project-people/:projectId", async (req, res) => {
+  try {
+    const { projectId } = req.params;
+
+    if (!projectId) {
+      return res.status(400).json({ error: "Project ID is required" });
+    }
+
+    const users = store.getAllUsers();
+    if (!users.length) {
+      return res.status(400).json({ error: "No authenticated users found" });
+    }
+
+    const auth = store.get(users[0]);
+    if (!auth) {
+      return res.status(400).json({ error: "No valid authentication found" });
+    }
+
+    // Fetch project details first
+    const { data: project } = await bc(auth.access).get(
+      `https://3.basecampapi.com/${auth.accountId}/projects/${projectId}.json`
+    );
+
+    // Fetch people in the project
+    const { data: projectPeople } = await bc(auth.access).get(
+      `https://3.basecampapi.com/${auth.accountId}/projects/${projectId}/people.json`
+    );
+
+    // Format the data nicely
+    const peopleDetails = projectPeople.map((person) => ({
+      id: person.id,
+      name: person.name,
+      email_address: person.email_address,
+      title: person.title,
+      admin: person.admin,
+      owner: person.owner,
+      company: person.company?.name || null,
+    }));
+
+    res.json({
+      status: "ok",
+      project: {
+        id: project.id,
+        name: project.name,
+        description: project.description,
+        status: project.status,
+      },
+      account_id: auth.accountId,
+      total_people: projectPeople.length,
+      people_with_emails: projectPeople.filter((p) => p.email_address).length,
+      people: peopleDetails,
+      note: "These are the people who have access to this specific project",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("Error fetching project people:", error);
+    res.status(error.response?.status || 500).json({
+      error: "Failed to fetch project people",
+      message: error.message,
+      status: error.response?.status,
+      details: error.response?.data,
+    });
+  }
+});
+
+// Debug endpoint to see raw Basecamp user data
+app.get("/debug/basecamp-users", async (req, res) => {
+  try {
+    const users = store.getAllUsers();
+    if (!users.length) {
+      return res.status(400).json({ error: "No authenticated users found" });
+    }
+
+    const auth = store.get(users[0]);
+    if (!auth) {
+      return res.status(400).json({ error: "No valid authentication found" });
+    }
+
+    // Fetch Basecamp people
+    const { data: basecampPeople } = await bc(auth.access).get(
+      `https://3.basecampapi.com/${auth.accountId}/people.json`
+    );
+
+    // Show all users with their details
+    const userDetails = basecampPeople.map((person) => ({
+      id: person.id,
+      name: person.name,
+      email_address: person.email_address,
+      title: person.title,
+      admin: person.admin,
+      owner: person.owner,
+    }));
+
+    res.json({
+      status: "ok",
+      account_id: auth.accountId,
+      total_users: basecampPeople.length,
+      users_with_emails: basecampPeople.filter((p) => p.email_address).length,
+      users: userDetails,
+      note: "These emails come directly from Basecamp user profiles",
+      action:
+        "Update incorrect emails in Basecamp Settings > People & permissions",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("Error fetching Basecamp users:", error);
+    res.status(500).json({
+      error: "Failed to fetch Basecamp users",
+      message: error.message,
+    });
+  }
+});
+
+// Debug endpoint to compare Airtable people with Basecamp
 app.get("/debug/people-matching", async (req, res) => {
   try {
     const users = store.getAllUsers();
@@ -1950,52 +2138,63 @@ app.get("/debug/people-matching", async (req, res) => {
       `https://3.basecampapi.com/${auth.accountId}/people.json`
     );
 
-    let customPeople = [];
-    let customPeopleError = null;
+    let airtablePeople = [];
+    let airtableError = null;
 
-    if (process.env.CUSTOM_PEOPLE_LIST) {
-      try {
-        customPeople = JSON.parse(process.env.CUSTOM_PEOPLE_LIST);
-      } catch (error) {
-        customPeopleError = error.message;
-      }
+    try {
+      airtablePeople = await fetchPeople(true); // Force refresh
+    } catch (error) {
+      airtableError = error.message;
     }
 
     // Compare and find matches/mismatches
-    const comparison = customPeople.map((custom) => {
+    const comparison = airtablePeople.map((airPerson) => {
       const basecampMatch = basecampPeople.find(
-        (bp) => bp.email_address.toLowerCase() === custom.email.toLowerCase()
+        (bp) =>
+          bp.email_address &&
+          bp.email_address.toLowerCase() === airPerson.email.toLowerCase()
       );
 
       return {
-        custom_name: custom.name,
-        custom_email: custom.email,
-        custom_email_lowercase: custom.email.toLowerCase(),
-        slack_user_id: custom.slack_user_id,
+        airtable_name: airPerson.name,
+        airtable_email: airPerson.email,
+        airtable_basecamp_id: airPerson.basecamp_id,
+        slack_user_id: airPerson.slack_user_id,
         basecamp_id: basecampMatch?.id || null,
         basecamp_name: basecampMatch?.name || null,
         basecamp_email: basecampMatch?.email_address || null,
+        ids_match:
+          airPerson.basecamp_id && basecampMatch
+            ? airPerson.basecamp_id == basecampMatch.id
+            : null,
         status: basecampMatch ? "✅ MATCHED" : "❌ NO MATCH",
       };
     });
 
     res.json({
       status: "ok",
-      custom_people_count: customPeople.length,
+      airtable_people_count: airtablePeople.length,
       basecamp_people_count: basecampPeople.length,
-      custom_people_error: customPeopleError,
+      airtable_error: airtableError,
       comparison: comparison,
-      unmatched_custom: comparison
+      unmatched_airtable: comparison
         .filter((c) => !c.basecamp_id)
-        .map((c) => c.custom_email),
-      all_basecamp_emails: basecampPeople.map((bp) => bp.email_address),
+        .map((c) => c.airtable_email),
+      id_mismatches: comparison
+        .filter((c) => c.ids_match === false)
+        .map(
+          (c) =>
+            `${c.airtable_name}: Airtable ID ${c.airtable_basecamp_id} != Basecamp ID ${c.basecamp_id}`
+        ),
+      all_basecamp_emails: basecampPeople
+        .filter((bp) => bp.email_address)
+        .map((bp) => bp.email_address),
       timestamp: new Date().toISOString(),
       help: {
         message:
-          "This shows how your CUSTOM_PEOPLE_LIST matches with actual Basecamp users",
+          "This shows how your Airtable people data matches with actual Basecamp users",
         note: "Email matching is case-insensitive",
-        action:
-          "Fix any unmatched emails in your CUSTOM_PEOPLE_LIST environment variable",
+        action: "Update Airtable records if there are mismatches",
       },
     });
   } catch (error) {
@@ -2229,43 +2428,47 @@ app.post("/webhook", async (req, res, next) => {
 });
 
 // Configure Slack notifications for Basecamp projects
-const setupSlackNotifications = () => {
+const setupSlackNotifications = async () => {
   const defaultChannel = process.env.SLACK_DEFAULT_CHANNEL;
-  const mappingsEnv = process.env.BASECAMP_SLACK_MAPPINGS;
 
-  if (!defaultChannel && !mappingsEnv) {
-    console.log("⚠️ No Slack channels configured");
-    console.log("Set SLACK_DEFAULT_CHANNEL for a default channel");
-    console.log("Set BASECAMP_SLACK_MAPPINGS for project-specific channels");
-    return;
-  }
+  try {
+    const mappings = await fetchProjectMappings();
+    const projectCount = Object.keys(mappings).length;
 
-  if (defaultChannel) {
-    console.log(`✅ Default Slack channel: ${defaultChannel}`);
-  }
-
-  if (mappingsEnv) {
-    try {
-      const mappings = JSON.parse(mappingsEnv);
-      const projectCount = Object.keys(mappings).length;
+    if (!defaultChannel && projectCount === 0) {
+      console.log("⚠️ No Slack channels configured");
+      console.log("Set SLACK_DEFAULT_CHANNEL for a default channel");
       console.log(
-        `✅ Project-specific mappings configured for ${projectCount} project(s):`
+        "Add project mappings in Airtable for project-specific channels"
+      );
+      return;
+    }
+
+    if (defaultChannel) {
+      console.log(`✅ Default Slack channel: ${defaultChannel}`);
+    }
+
+    if (projectCount > 0) {
+      console.log(
+        `✅ Project-specific mappings loaded from Airtable (${projectCount} project(s)):`
       );
       Object.entries(mappings).forEach(([projectId, channelId]) => {
         console.log(`   Project ${projectId} → Channel ${channelId}`);
       });
-    } catch (error) {
+    }
+  } catch (error) {
+    console.log(
+      `⚠️ Error loading project mappings from Airtable: ${error.message}`
+    );
+    if (defaultChannel) {
       console.log(
-        `⚠️ Invalid BASECAMP_SLACK_MAPPINGS format: ${error.message}`
-      );
-      console.log(
-        'Expected format: {"projectId1":"channelId1","projectId2":"channelId2"}'
+        `Will use default channel ${defaultChannel} for all projects`
       );
     }
   }
 };
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`🚀 Server started on port :${PORT}`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || "development"}`);
   console.log(
@@ -2273,7 +2476,7 @@ app.listen(PORT, () => {
   );
 
   // Set up Slack notifications
-  setupSlackNotifications();
+  await setupSlackNotifications();
 });
 
 // Set up bot commands menu (works for both polling and webhook modes)
