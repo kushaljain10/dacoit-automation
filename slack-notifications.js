@@ -142,26 +142,6 @@ const formatBasecampUpdate = (type, data) => {
             },
           },
           {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `*${data.title}*`,
-            },
-          },
-          {
-            type: "section",
-            fields: [
-              {
-                type: "mrkdwn",
-                text: `*Project:*\n${data.project_name}`,
-              },
-              {
-                type: "mrkdwn",
-                text: `*Completed by:*\n${data.completer_name}`,
-              },
-            ],
-          },
-          {
             type: "actions",
             elements: [
               {
@@ -193,28 +173,18 @@ const formatBasecampUpdate = (type, data) => {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `*On task:* ${data.title}`,
+              text:
+                (data.content
+                  ? data.content.replace(/<div>/g, "").replace(/<\/div>/g, "")
+                  : null) || "_No comment text_",
             },
           },
           {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: data.content || "_No comment text_",
+              text: `*Commented by:* ${data.creator_name}`,
             },
-          },
-          {
-            type: "section",
-            fields: [
-              {
-                type: "mrkdwn",
-                text: `*Project:*\n${data.project_name}`,
-              },
-              {
-                type: "mrkdwn",
-                text: `*Commented by:*\n${data.creator_name}`,
-              },
-            ],
           },
           {
             type: "actions",
