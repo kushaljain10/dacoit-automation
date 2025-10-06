@@ -9,7 +9,11 @@ const path = require("path");
 const { processTaskWithAI } = require("./ai");
 const { AirtableAuthStore } = require("./airtable-store");
 const { bc } = require("./basecamp");
-const { sendToSlack } = require("./slack-notifications");
+const {
+  sendToSlack,
+  sendAssigneeDM,
+  sendAssignmentToThread,
+} = require("./slack-notifications");
 const {
   setupWebhooksForAllProjects,
   listProjectWebhooks,
@@ -105,6 +109,9 @@ const resetFlow = async (ctx) => {
   if (ctx.session.flow) {
     if (ctx.session.flow.projectMessages) {
       await cleanupMessages(ctx, ctx.session.flow.projectMessages);
+    }
+    if (ctx.session.flow.todoListMessages) {
+      await cleanupMessages(ctx, ctx.session.flow.todoListMessages);
     }
     if (ctx.session.flow.assigneeMessages) {
       await cleanupMessages(ctx, ctx.session.flow.assigneeMessages);
@@ -409,6 +416,100 @@ const askProject = async (ctx, page = 0) => {
   }
 };
 
+const askTodoList = async (ctx, page = 0) => {
+  const f = ctx.session.flow;
+  const projectId = f.selections.projectId;
+
+  try {
+    // Fetch all todo lists for the project
+    const { lists } = await fetchTodoLists(ctx, projectId);
+
+    if (!lists || lists.length === 0) {
+      return ctx.reply("No to-do lists found in this project.");
+    }
+
+    // Store lists in session for later use
+    f.todoLists = lists.map((l) => ({
+      id: l.id,
+      name: l.name,
+      status: l.status,
+    }));
+
+    console.log(
+      `Found ${lists.length} todo lists in project ${projectId}:`,
+      f.todoLists
+    );
+
+    // If only one list, auto-select it and move to next step
+    if (lists.length === 1) {
+      console.log(`Only one todo list found, auto-selecting: ${lists[0].name}`);
+      f.selections.todoListId = lists[0].id;
+      f.step = 5; // Move to assignee selection
+      return askAssignee(ctx);
+    }
+
+    // Multiple lists - show pagination
+    const itemsPerPage = 8;
+    const startIndex = page * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    const currentPageLists = lists.slice(startIndex, endIndex);
+    const hasMore = endIndex < lists.length;
+    const hasPrevious = page > 0;
+
+    // Create list buttons
+    const buttons = currentPageLists.map((l) => {
+      const displayName = l.status === "archived" ? `${l.name} (archived)` : l.name;
+      return [Markup.button.callback(displayName, `list_${l.id}`)];
+    });
+
+    // Add navigation buttons
+    const navButtons = [];
+    if (hasPrevious) {
+      navButtons.push(
+        Markup.button.callback("⬅️ Previous", `list_page_${page - 1}`)
+      );
+    }
+    if (hasMore) {
+      navButtons.push(
+        Markup.button.callback("➡️ Show More", `list_page_${page + 1}`)
+      );
+    }
+
+    if (navButtons.length > 0) {
+      buttons.push(navButtons);
+    }
+
+    const pageInfo =
+      lists.length > itemsPerPage
+        ? ` (${startIndex + 1}-${Math.min(endIndex, lists.length)} of ${
+            lists.length
+          })`
+        : "";
+
+    const message = await ctx.reply(
+      `Which to-do list should this task be added to?${pageInfo}:`,
+      Markup.inlineKeyboard(buttons)
+    );
+
+    // Track this message for cleanup later
+    if (!f.todoListMessages) {
+      f.todoListMessages = [];
+    }
+    f.todoListMessages.push(message.message_id);
+
+    return message;
+  } catch (error) {
+    console.error(`Error fetching todo lists:`, {
+      status: error.response?.status,
+      error: error.response?.data,
+      projectId,
+    });
+    return ctx.reply(
+      "Error fetching to-do lists. Please check your Basecamp permissions."
+    );
+  }
+};
+
 const askAssignee = async (ctx, page = 0) => {
   const { access, accountId } = await store.get(String(ctx.from.id));
   const projectId = ctx.session.flow.selections.projectId;
@@ -528,10 +629,14 @@ const askBatchTaskInfo = async (ctx) => {
     f.selections.batchTasksNeedingInfo[f.selections.currentBatchTaskIndex];
   const task = needingInfo.task;
 
-  // Store what we're asking for
-  f.selections.currentBatchTaskQuestion = needingInfo.needsProject
-    ? "project"
-    : "dueDate";
+  // Store what we're asking for - updated to include todo list selection
+  if (needingInfo.needsProject) {
+    f.selections.currentBatchTaskQuestion = "project";
+  } else if (needingInfo.needsTodoList) {
+    f.selections.currentBatchTaskQuestion = "todoList";
+  } else if (needingInfo.needsDueDate) {
+    f.selections.currentBatchTaskQuestion = "dueDate";
+  }
 
   if (needingInfo.needsProject) {
     await ctx.reply(
@@ -540,8 +645,17 @@ const askBatchTaskInfo = async (ctx) => {
       }\n\nProject not found. Please select a project:`,
       { parse_mode: "Markdown" }
     );
-    f.step = 6; // Batch project selection
+    f.step = 7; // Batch project selection
     return askProject(ctx);
+  } else if (needingInfo.needsTodoList) {
+    await ctx.reply(
+      `📋 **Task ${needingInfo.index + 1}:** ${
+        task.title
+      }\n\nPlease select a to-do list:`,
+      { parse_mode: "Markdown" }
+    );
+    f.step = 8; // Batch todo list selection
+    return askTodoList(ctx);
   } else if (needingInfo.needsDueDate) {
     await ctx.reply(
       `📋 **Task ${needingInfo.index + 1}:** ${
@@ -549,7 +663,7 @@ const askBatchTaskInfo = async (ctx) => {
       }\n\nDue date? (e.g. 2025-10-12, "today", "tomorrow", "in 3 days", or type "skip" to skip)`,
       { parse_mode: "Markdown" }
     );
-    f.step = 7; // Batch due date input
+    f.step = 9; // Batch due date input
     return;
   }
 };
@@ -578,7 +692,15 @@ const createBatchTasks = async (ctx, processedTasks, basecampPeople) => {
 
     try {
       // Get todo list for the project
-      const list = await chooseDefaultTodoList(ctx, processedTask.projectId);
+      let list;
+      if (processedTask.todoListId) {
+        // Use the pre-selected todo list
+        list = { id: processedTask.todoListId };
+        console.log(`Using pre-selected todo list ${processedTask.todoListId} for task ${processedTask.title}`);
+      } else {
+        // Choose default todo list
+        list = await chooseDefaultTodoList(ctx, processedTask.projectId);
+      }
 
       // Verify assignee is part of the project if assigneeId is provided
       if (processedTask.assigneeId) {
@@ -654,6 +776,33 @@ const createBatchTasks = async (ctx, processedTasks, basecampPeople) => {
         assigneeId: processedTask.assigneeId,
         dueOn: processedTask.dueOn,
       });
+
+      // Get project name for notification
+      const { access, accountId } = await store.get(String(ctx.from.id));
+      let projectName = "Unknown Project";
+      try {
+        const { data: project } = await bc(access).get(
+          `https://3.basecampapi.com/${accountId}/projects/${processedTask.projectId}.json`
+        );
+        projectName = project.name;
+      } catch (error) {
+        console.error("Error fetching project name:", error.message);
+      }
+
+      const creatorName =
+        ctx.from?.first_name || ctx.from?.username || "Unknown";
+
+      // Send DM to assignee if assigned
+      if (processedTask.slackUserId) {
+        await notifyAssignees(
+          todo,
+          projectName,
+          creatorName,
+          processedTask.slackUserId
+        );
+      } else if (processedTask.assigneeId) {
+        await notifyAssignees(todo, projectName, creatorName);
+      }
 
       results.push({
         success: true,
@@ -779,12 +928,13 @@ const createTodoList = async (
   }
 };
 
-const chooseDefaultTodoList = async (ctx, projectId) => {
+// Fetch all todo lists for a project
+const fetchTodoLists = async (ctx, projectId) => {
   const { access, accountId } = await store.get(String(ctx.from.id));
 
   try {
     console.log(
-      `Fetching project and todoset for project ${projectId}, account ${accountId}`
+      `Fetching todo lists for project ${projectId}, account ${accountId}`
     );
 
     // Get the project data which includes the dock with todoset ID
@@ -796,7 +946,6 @@ const chooseDefaultTodoList = async (ctx, projectId) => {
       name: project.name,
       status: project.status,
     });
-    console.log(`Project dock:`, project.dock);
 
     // Find the todoset from the dock
     const todosetDock = project.dock.find((item) => item.name === "todoset");
@@ -819,31 +968,26 @@ const chooseDefaultTodoList = async (ctx, projectId) => {
       throw new Error(`No valid todoset found in project ${projectId}`);
     }
 
-    console.log(`Using todoset:`, todoset);
-
-    // 2) fetch lists inside that todoset
+    // Fetch lists inside that todoset
     const listsUrl = `https://3.basecampapi.com/${accountId}/buckets/${projectId}/todosets/${todoset.id}/todolists.json`;
     console.log(`Fetching lists from: ${listsUrl}`);
 
     const { data: lists } = await bc(access).get(listsUrl);
     console.log(`Found ${lists?.length || 0} existing lists:`, lists);
 
-    // 3) if no lists exist, create a default one
+    // If no lists exist, create a default one
     if (!lists || lists.length === 0) {
       console.log(
         `No todo lists found in project ${projectId}, creating default list...`
       );
       const newList = await createTodoList(ctx, projectId, todoset.id, "Tasks");
       console.log(`Created new list:`, newList);
-      return newList;
+      return { todosetId: todoset.id, lists: [newList] };
     }
 
-    // pick the first open list; fallback to any
-    const open = lists.find((l) => l.status === "active") || lists[0];
-    console.log(`Selected existing list:`, open);
-    return open;
+    return { todosetId: todoset.id, lists };
   } catch (error) {
-    console.error(`Error in chooseDefaultTodoList:`, {
+    console.error(`Error in fetchTodoLists:`, {
       message: error.message,
       response: error.response?.data,
       status: error.response?.status,
@@ -852,6 +996,16 @@ const chooseDefaultTodoList = async (ctx, projectId) => {
     });
     throw error;
   }
+};
+
+// Legacy function - kept for backward compatibility
+const chooseDefaultTodoList = async (ctx, projectId) => {
+  const { lists } = await fetchTodoLists(ctx, projectId);
+  
+  // Pick the first active list; fallback to any
+  const open = lists.find((l) => l.status === "active") || lists[0];
+  console.log(`Selected default list:`, open);
+  return open;
 };
 
 const createTodo = async (
@@ -924,6 +1078,82 @@ const createTodo = async (
   console.log(`Full response data keys:`, Object.keys(data));
 
   return data; // includes id, app_url, etc.
+};
+
+// Helper function to send DMs to assignees after task creation
+const notifyAssignees = async (
+  todo,
+  projectName,
+  creatorName,
+  assigneeSlackId = null
+) => {
+  try {
+    // Get assignees from the todo response
+    const assignees = todo.assignees || [];
+
+    if (assignees.length === 0 && !assigneeSlackId) {
+      console.log("No assignees to notify");
+      return;
+    }
+
+    // Fetch Airtable people to get Slack IDs
+    const airtablePeople = await fetchPeople();
+
+    // If assigneeSlackId is provided, use it directly
+    if (assigneeSlackId) {
+      const taskData = {
+        title: todo.content || todo.title,
+        description: todo.description || "",
+        project_name: projectName,
+        due_date: todo.due_on,
+        creator_name: creatorName,
+        url: todo.app_url,
+      };
+
+      await sendAssigneeDM(assigneeSlackId, taskData, false);
+      return;
+    }
+
+    // Otherwise, get Slack IDs from assignees
+    for (const assignee of assignees) {
+      // Try to find the person in Airtable by Basecamp ID first, then by email
+      let airtablePerson = airtablePeople.find(
+        (ap) => ap.basecamp_id && ap.basecamp_id == assignee.id
+      );
+
+      if (!airtablePerson && assignee.email_address) {
+        airtablePerson = airtablePeople.find(
+          (ap) =>
+            ap.email &&
+            ap.email.toLowerCase() === assignee.email_address.toLowerCase()
+        );
+      }
+
+      if (airtablePerson && airtablePerson.slack_id) {
+        console.log(
+          `Sending DM to ${assignee.name} (Slack ID: ${airtablePerson.slack_id})`
+        );
+
+        const taskData = {
+          title: todo.content || todo.title,
+          description: todo.description || "",
+          project_name: projectName,
+          due_date: todo.due_on,
+          creator_name: creatorName,
+          url: todo.app_url,
+        };
+
+        await sendAssigneeDM(airtablePerson.slack_id, taskData, false);
+      } else {
+        console.log(
+          `⚠️ No Slack ID found for assignee ${assignee.name} (${assignee.email_address})`
+        );
+      }
+    }
+  } catch (error) {
+    console.error("Error notifying assignees:", error.message);
+    // Don't throw - this is not critical
+  }
 };
 
 /** ------------ Invoice Creation Helpers ------------ **/
@@ -1300,96 +1530,105 @@ bot.on("text", requireAuth, async (ctx) => {
 
   const text = ctx.message.text?.trim();
 
-  // Handle invoice flow text inputs
+  // Handle invoice flow text inputs - only for steps that expect text input
   if (ctx.session.invoiceFlow && ctx.session.invoiceFlow.step > 0) {
     const flow = ctx.session.invoiceFlow;
 
-    // New customer creation flow
-    if (flow.step === 2) {
-      // Collecting name
-      flow.newCustomer.name = text;
-      flow.step = 3;
-      await askCustomerDetails(ctx, "email");
-      return;
-    }
+    // Only handle text input for specific steps (2-4 for customer creation, 7 for line items)
+    // Other steps use buttons, so text input should be ignored and flow should be reset
+    const textInputSteps = [2, 3, 4, 7];
 
-    if (flow.step === 3) {
-      // Collecting email
-      // Validate email format
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(text)) {
-        await ctx.reply(
-          "❌ Invalid email format. Please enter a valid email address."
-        );
-        return;
-      }
-      flow.newCustomer.email = text;
-      flow.step = 4;
-      await askCustomerDetails(ctx, "organizationName");
-      return;
-    }
-
-    if (flow.step === 4) {
-      // Collecting organization name and creating customer
-      flow.newCustomer.organizationName = text;
-
-      await ctx.reply("⏳ Creating customer...");
-
-      try {
-        const customer = await createCustomer(flow.newCustomer);
-        flow.data.customerId = customer.id;
-        flow.data.customerName = customer.name;
-        flow.step = 5;
-
-        await ctx.reply(`✅ Customer created: ${customer.name}`);
-        await askCurrency(ctx);
-      } catch (error) {
-        console.error("Error creating customer:", error);
-        await ctx.reply(
-          "❌ Failed to create customer. Please check the details and try again.\n\n" +
-            `Error: ${error.response?.data?.message || error.message}`
-        );
-        flow.step = 2;
-        await askCustomerDetails(ctx, "name");
-      }
-      return;
-    }
-
-    // Line item collection
-    if (flow.step === 7) {
-      // Parse line item: "Item Name | Price"
-      const parts = text.split("|").map((p) => p.trim());
-
-      if (parts.length !== 2) {
-        await ctx.reply("❌ Invalid format. Please use: `Item Name | Price`", {
-          parse_mode: "Markdown",
-        });
+    if (textInputSteps.includes(flow.step)) {
+      // New customer creation flow
+      if (flow.step === 2) {
+        // Collecting name
+        flow.newCustomer.name = text;
+        flow.step = 3;
+        await askCustomerDetails(ctx, "email");
         return;
       }
 
-      const [name, priceStr] = parts;
-      const price = parseFloat(priceStr);
-
-      if (isNaN(price) || price <= 0) {
-        await ctx.reply(
-          "❌ Invalid price. Please enter a valid positive number."
-        );
+      if (flow.step === 3) {
+        // Collecting email
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(text)) {
+          await ctx.reply(
+            "❌ Invalid email format. Please enter a valid email address."
+          );
+          return;
+        }
+        flow.newCustomer.email = text;
+        flow.step = 4;
+        await askCustomerDetails(ctx, "organizationName");
         return;
       }
 
-      flow.data.lineItems.push({ name, price: price.toString() });
+      if (flow.step === 4) {
+        // Collecting organization name and creating customer
+        flow.newCustomer.organizationName = text;
 
-      await ctx.reply(`✅ Item added: ${name} - $${price}`);
-      await confirmLineItems(ctx);
-      return;
-    }
+        await ctx.reply("⏳ Creating customer...");
 
-    // If we get here and in invoice flow, something went wrong
-    if (flow.step > 0) {
-      await ctx.reply(
-        "⚠️ Unexpected input. Please use the buttons provided or type /create_invoice to start over."
+        try {
+          const customer = await createCustomer(flow.newCustomer);
+          flow.data.customerId = customer.id;
+          flow.data.customerName = customer.name;
+          flow.step = 5;
+
+          await ctx.reply(`✅ Customer created: ${customer.name}`);
+          await askCurrency(ctx);
+        } catch (error) {
+          console.error("Error creating customer:", error);
+          await ctx.reply(
+            "❌ Failed to create customer. Please check the details and try again.\n\n" +
+              `Error: ${error.response?.data?.message || error.message}`
+          );
+          flow.step = 2;
+          await askCustomerDetails(ctx, "name");
+        }
+        return;
+      }
+
+      // Line item collection
+      if (flow.step === 7) {
+        // Parse line item: "Item Name | Price"
+        const parts = text.split("|").map((p) => p.trim());
+
+        if (parts.length !== 2) {
+          await ctx.reply(
+            "❌ Invalid format. Please use: `Item Name | Price`",
+            {
+              parse_mode: "Markdown",
+            }
+          );
+          return;
+        }
+
+        const [name, priceStr] = parts;
+        const price = parseFloat(priceStr);
+
+        if (isNaN(price) || price <= 0) {
+          await ctx.reply(
+            "❌ Invalid price. Please enter a valid positive number."
+          );
+          return;
+        }
+
+        flow.data.lineItems.push({ name, price: price.toString() });
+
+        await ctx.reply(`✅ Item added: ${name} - $${price}`);
+        await confirmLineItems(ctx);
+        return;
+      }
+    } else {
+      // User is in invoice flow but at a button-selection step
+      // Reset invoice flow and allow normal task processing
+      console.log(
+        `User sent text at invoice step ${flow.step}, resetting invoice flow`
       );
-      return;
+      resetInvoiceFlow(ctx);
+      // Continue to task processing below
     }
   }
 
@@ -1528,12 +1767,13 @@ bot.on("text", requireAuth, async (ctx) => {
           processedTasks.push(processedTask);
         }
 
-        // Check if any tasks are missing project or due date
+        // Check if any tasks are missing project, todo list, or due date
         const tasksNeedingInfo = processedTasks
           .map((task, index) => ({
             index,
             task,
             needsProject: !task.projectId,
+            needsTodoList: false, // Will be set after project selection
             needsDueDate: !task.dueOn,
           }))
           .filter((t) => t.needsProject || t.needsDueDate);
@@ -1653,8 +1893,8 @@ bot.on("text", requireAuth, async (ctx) => {
     return askProject(ctx);
   }
 
-  if (f.step === 5) {
-    // This is now the due date step (after AI processing, confirmation, project, assignee)
+  if (f.step === 6) {
+    // This is now the due date step (after AI processing, confirmation, project, todo list, assignee)
     const due = parseDue(text);
 
     // Handle skip - null is valid when user types "skip"
@@ -1667,8 +1907,14 @@ bot.on("text", requireAuth, async (ctx) => {
     f.selections.dueOn = due;
 
     try {
-      const { projectId, todoListId, title, description, assigneeId } =
-        f.selections;
+      const {
+        projectId,
+        todoListId,
+        title,
+        description,
+        assigneeId,
+        slackUserId,
+      } = f.selections;
       const todo = await createTodo(ctx, {
         projectId,
         todoListId,
@@ -1677,6 +1923,20 @@ bot.on("text", requireAuth, async (ctx) => {
         assigneeId,
         dueOn: due,
       });
+
+      // Get project name for notification
+      const projectName =
+        f.projects?.find((p) => p.id === projectId)?.name || "Unknown Project";
+      const creatorName =
+        ctx.from?.first_name || ctx.from?.username || "Unknown";
+
+      // Send DM to assignee if assigned
+      if (slackUserId) {
+        await notifyAssignees(todo, projectName, creatorName, slackUserId);
+      } else if (assigneeId) {
+        await notifyAssignees(todo, projectName, creatorName);
+      }
+
       await resetFlow(ctx);
       return ctx.reply(
         `✅ Task created: ${todo.content}\nLink: ${todo.app_url}`
@@ -1688,7 +1948,7 @@ bot.on("text", requireAuth, async (ctx) => {
     }
   }
 
-  if (f.step === 7) {
+  if (f.step === 9) {
     // Batch task due date input
     const needingInfo =
       f.selections.batchTasksNeedingInfo[f.selections.currentBatchTaskIndex];
@@ -1716,7 +1976,7 @@ bot.on("text", requireAuth, async (ctx) => {
     needingInfo.needsDueDate = false;
 
     // Check if current task still needs info
-    if (!needingInfo.needsProject && !needingInfo.needsDueDate) {
+    if (!needingInfo.needsProject && !needingInfo.needsTodoList && !needingInfo.needsDueDate) {
       // Move to next task needing info
       f.selections.currentBatchTaskIndex++;
     }
@@ -1754,8 +2014,8 @@ bot.action(/^proj_(\d+)$/, requireAuth, async (ctx) => {
     f.projectMessages = [];
   }
 
-  // Check if we're in batch task mode (step 6)
-  if (f.step === 6) {
+  // Check if we're in batch task mode (step 7)
+  if (f.step === 7) {
     // Batch task project selection
     const needingInfo =
       f.selections.batchTasksNeedingInfo[f.selections.currentBatchTaskIndex];
@@ -1767,6 +2027,24 @@ bot.action(/^proj_(\d+)$/, requireAuth, async (ctx) => {
 
     // Mark project as provided
     needingInfo.needsProject = false;
+
+    // Now check if we need to ask for todo list
+    try {
+      const { lists } = await fetchTodoLists(ctx, projectId);
+      
+      if (lists.length > 1) {
+        // Multiple lists - need to ask user
+        needingInfo.needsTodoList = true;
+        return askBatchTaskInfo(ctx);
+      } else if (lists.length === 1) {
+        // Auto-select the only list
+        f.selections.batchTasks[taskIndex].todoListId = lists[0].id;
+        console.log(`Auto-selected todo list for task ${taskIndex + 1}: ${lists[0].name}`);
+      }
+    } catch (error) {
+      console.error("Error fetching todo lists for batch task:", error.message);
+      // Continue anyway - will use default list
+    }
 
     // Check if current task still needs info (due date)
     if (needingInfo.needsDueDate) {
@@ -1799,28 +2077,86 @@ bot.action(/^proj_(\d+)$/, requireAuth, async (ctx) => {
   // Normal single task flow
   f.selections.projectId = projectId;
 
-  // pick a default list inside the project (first active list, create if none exists)
+  // Fetch todo lists and ask user to select if multiple exist
   try {
-    const list = await chooseDefaultTodoList(ctx, projectId);
-    f.selections.todoListId = list.id;
-
-    // Inform user if we created a new list
-    if (
-      list.name === "Tasks" &&
-      list.description === "Default to-do list created automatically"
-    ) {
-      await ctx.reply(
-        `✅ Project selected! Created new to-do list "${list.name}" in this project.`
-      );
-    }
+    f.step = 4; // Move to todo list selection
+    return askTodoList(ctx);
   } catch (e) {
     console.error(e?.response?.data || e.message);
     return ctx.reply(
       "Could not find or create a to-do list in that project. Please check project permissions."
     );
   }
+});
 
-  f.step = 4;
+// Todo list chosen
+bot.action(/^list_(.+)$/, requireAuth, async (ctx) => {
+  await ctx.answerCbQuery();
+  const listIdOrPage = ctx.match[1];
+
+  if (listIdOrPage.startsWith("page_")) {
+    // Handle pagination
+    const page = Number(listIdOrPage.replace("page_", ""));
+    console.log(`Showing todo list page ${page}`);
+    return askTodoList(ctx, page);
+  }
+
+  const f = ctx.session.flow;
+  const listId = Number(listIdOrPage);
+
+  // Clean up all todo list selection messages
+  if (f.todoListMessages) {
+    await cleanupMessages(ctx, f.todoListMessages);
+    f.todoListMessages = [];
+  }
+
+  // Check if we're in batch task mode (step 8)
+  if (f.step === 8) {
+    // Batch task todo list selection
+    const needingInfo =
+      f.selections.batchTasksNeedingInfo[f.selections.currentBatchTaskIndex];
+    const taskIndex = needingInfo.index;
+
+    // Update the task's todo list
+    f.selections.batchTasks[taskIndex].todoListId = listId;
+    console.log(`Set todo list for task ${taskIndex + 1}: ${listId}`);
+
+    // Mark todo list as provided
+    needingInfo.needsTodoList = false;
+
+    // Check if current task still needs info (due date)
+    if (needingInfo.needsDueDate) {
+      return askBatchTaskInfo(ctx);
+    }
+
+    // Move to next task needing info
+    f.selections.currentBatchTaskIndex++;
+
+    // Check if there are more tasks needing info
+    if (
+      f.selections.currentBatchTaskIndex <
+      f.selections.batchTasksNeedingInfo.length
+    ) {
+      return askBatchTaskInfo(ctx);
+    }
+
+    // All info collected, create tasks
+    console.log("All batch task info collected, creating tasks...");
+    const results = await createBatchTasks(
+      ctx,
+      f.selections.batchTasks,
+      f.selections.basecampPeople
+    );
+    await sendBatchTaskSummary(ctx, results);
+    await resetFlow(ctx);
+    return;
+  }
+
+  // Normal single task flow
+  f.selections.todoListId = listId;
+  console.log(`Todo list selected: ${listId}`);
+
+  f.step = 5; // Move to assignee selection
   return askAssignee(ctx);
 });
 
@@ -1839,7 +2175,7 @@ bot.action(/^person_(.+)$/, requireAuth, async (ctx) => {
     // No assignee selected
     ctx.session.flow.selections.assigneeId = null;
     console.log(`No assignee selected for task`);
-    ctx.session.flow.step = 5;
+    ctx.session.flow.step = 6; // Updated step number
     return askDueDate(ctx);
   } else if (personIdOrNone.startsWith("page_")) {
     // Handle assignee pagination
@@ -1856,7 +2192,7 @@ bot.action(/^person_(.+)$/, requireAuth, async (ctx) => {
     const personId = Number(personIdOrNone);
     ctx.session.flow.selections.assigneeId = personId;
     console.log(`Assignee selected: ${personId}`);
-    ctx.session.flow.step = 5;
+    ctx.session.flow.step = 6; // Updated step number
     return askDueDate(ctx);
   }
 });
@@ -1880,13 +2216,13 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
 
   console.log("Using AI-extracted project, proceeding with task creation");
 
-  // Get todo list for the project
+  // Get todo lists for the project - will ask user if multiple
   try {
-    const list = await chooseDefaultTodoList(
-      ctx,
-      ctx.session.flow.selections.projectId
-    );
-    ctx.session.flow.selections.todoListId = list.id;
+    // Check if we already have a todo list selected
+    if (!ctx.session.flow.selections.todoListId) {
+      ctx.session.flow.step = 4;
+      return askTodoList(ctx);
+    }
 
     // Check if AI already extracted assignee - if so, skip to due date check
     if (ctx.session.flow.selections.assigneeId) {
@@ -1895,14 +2231,21 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
       // Check if due date is missing - if so, ask for it
       if (!ctx.session.flow.selections.dueOn) {
         console.log("No due date found, asking user");
-        ctx.session.flow.step = 5;
+        ctx.session.flow.step = 6;
         return askDueDate(ctx);
       }
 
       // All info present, create task immediately
       console.log("Using AI-extracted due date, creating task immediately");
-      const { projectId, todoListId, title, description, assigneeId, dueOn } =
-        ctx.session.flow.selections;
+      const {
+        projectId,
+        todoListId,
+        title,
+        description,
+        assigneeId,
+        dueOn,
+        slackUserId,
+      } = ctx.session.flow.selections;
       try {
         const todo = await createTodo(ctx, {
           projectId,
@@ -1912,6 +2255,21 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
           assigneeId,
           dueOn,
         });
+
+        // Get project name for notification
+        const projectName =
+          ctx.session.flow.projects?.find((p) => p.id === projectId)?.name ||
+          "Unknown Project";
+        const creatorName =
+          ctx.from?.first_name || ctx.from?.username || "Unknown";
+
+        // Send DM to assignee if assigned
+        if (slackUserId) {
+          await notifyAssignees(todo, projectName, creatorName, slackUserId);
+        } else if (assigneeId) {
+          await notifyAssignees(todo, projectName, creatorName);
+        }
+
         await resetFlow(ctx);
         return ctx.reply(
           `✅ Task created: ${todo.content}\nLink: ${todo.app_url}`
@@ -1923,7 +2281,7 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
       }
     } else {
       // Ask for assignee
-      ctx.session.flow.step = 4;
+      ctx.session.flow.step = 5;
       return askAssignee(ctx);
     }
   } catch (e) {
@@ -2137,7 +2495,9 @@ app.post("/basecamp/webhook", async (req, res) => {
           // For todo events, fetch the todo itself
           if (
             event.kind === "todo_created" ||
-            event.kind === "todo_completed"
+            event.kind === "todo_completed" ||
+            event.kind === "todo_assignees_changed" ||
+            event.kind === "todo_changed"
           ) {
             if (event.recording.url) {
               const { data: fetchedTodo } = await bc(auth.access).get(
@@ -2339,6 +2699,58 @@ app.post("/basecamp/webhook", async (req, res) => {
             todoDetails.bucket?.id || event.recording.bucket?.id, // Project ID
             todoDetails.title || event.recording.title // Task title
           );
+        }
+        break;
+
+      case "todo_assignees_changed":
+      case "todo_changed":
+        // Handle assignment changes
+        console.log("Processing assignment change event");
+
+        // Fetch the full todo details to see current assignees
+        if (todoDetails && enrichedAssignees.length > 0) {
+          console.log("Task has assignees after change:", enrichedAssignees);
+
+          // Send DM to newly assigned people
+          for (const assignee of enrichedAssignees) {
+            if (assignee.slack_id) {
+              console.log(
+                `Sending assignment DM to ${assignee.name} (${assignee.slack_id})`
+              );
+
+              await sendAssigneeDM(assignee.slack_id, data, true); // true = existing task
+            }
+          }
+
+          // Also send notification to thread/channel for each assignee
+          const taskId = todoDetails.id;
+          const threadInfo = await getTaskMessage(taskId);
+
+          for (const assignee of enrichedAssignees) {
+            if (threadInfo && threadInfo.thread_ts) {
+              // Reply to the original thread
+              console.log(
+                `Sending assignment notification to thread for ${assignee.name}`
+              );
+              await sendAssignmentToThread(
+                threadInfo.channel_id,
+                threadInfo.thread_ts,
+                assignee.slack_id,
+                data
+              );
+            } else {
+              // No thread found, send to channel
+              console.log(
+                `No thread found, sending assignment notification to channel for ${assignee.name}`
+              );
+              await sendAssignmentToThread(
+                channelId,
+                null,
+                assignee.slack_id,
+                data
+              );
+            }
+          }
         }
         break;
 
@@ -3193,8 +3605,14 @@ if (process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT) {
 } else {
   // Use polling for local development
   console.log("🔄 Starting bot in polling mode for development");
-  bot
-    .launch()
+
+  // Delete webhook before starting polling to avoid conflicts
+  bot.telegram
+    .deleteWebhook()
+    .then(() => {
+      console.log("✅ Webhook deleted, starting polling...");
+      return bot.launch();
+    })
     .then(() => {
       console.log("✅ Telegram bot launched in polling mode");
       // Set up commands menu after bot is launched

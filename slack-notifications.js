@@ -245,4 +245,169 @@ const sendToSlack = async (channelId, type, data, threadTs = null) => {
   }
 };
 
-module.exports = { sendToSlack };
+// Send a direct message to an assignee about their task assignment
+const sendAssigneeDM = async (
+  assigneeSlackId,
+  taskData,
+  isExistingTask = false
+) => {
+  try {
+    if (!assigneeSlackId) {
+      console.log("No Slack ID provided, skipping DM");
+      return null;
+    }
+
+    console.log(`Sending DM to ${assigneeSlackId} about task assignment`);
+
+    // Format due date nicely
+    let dueDateText = "No due date";
+    if (taskData.due_date) {
+      const date = new Date(taskData.due_date);
+      if (!isNaN(date.getTime())) {
+        dueDateText = date.toLocaleDateString("en-US", {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+        });
+      } else {
+        dueDateText = taskData.due_date;
+      }
+    }
+
+    const headerText = isExistingTask
+      ? "📌 You've been assigned to a task"
+      : "🆕 You've been assigned to a new task";
+
+    const blocks = [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: headerText,
+          emoji: true,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*${taskData.title}*`,
+        },
+      },
+    ];
+
+    // Add description if available
+    if (taskData.description) {
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: taskData.description,
+        },
+      });
+    }
+
+    // Add task details
+    blocks.push({
+      type: "section",
+      fields: [
+        {
+          type: "mrkdwn",
+          text: `*Project:* ${taskData.project_name || "N/A"}`,
+        },
+        {
+          type: "mrkdwn",
+          text: `*Due Date:* ${dueDateText}`,
+        },
+        {
+          type: "mrkdwn",
+          text: `*Created by:* ${taskData.creator_name || "Unknown"}`,
+        },
+      ],
+    });
+
+    // Add link to task
+    if (taskData.url) {
+      blocks.push({
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: "View Task in Basecamp",
+              emoji: true,
+            },
+            url: taskData.url,
+            style: "primary",
+          },
+        ],
+      });
+    }
+
+    const response = await slack.chat.postMessage({
+      channel: assigneeSlackId,
+      text: `${headerText}: ${taskData.title}`,
+      blocks: blocks,
+    });
+
+    console.log(
+      `✅ DM sent to ${assigneeSlackId} about task: ${taskData.title}`
+    );
+    return response;
+  } catch (error) {
+    console.error(`Error sending DM to ${assigneeSlackId}:`, error.message);
+    // Don't throw - DM is nice-to-have, not critical
+    return null;
+  }
+};
+
+// Send assignment notification to thread/channel
+const sendAssignmentToThread = async (
+  channelId,
+  threadTs,
+  assigneeSlackId,
+  taskData
+) => {
+  try {
+    const assigneeMention = assigneeSlackId
+      ? `<@${assigneeSlackId}>`
+      : "Someone";
+
+    const message = {
+      channel: channelId,
+      text: `${assigneeMention} has been assigned to this task`,
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `👤 ${assigneeMention} has been assigned to this task`,
+          },
+        },
+      ],
+    };
+
+    // If we have a thread, reply to it and broadcast to channel
+    if (threadTs) {
+      message.thread_ts = threadTs;
+      message.reply_broadcast = true;
+      console.log(
+        `Replying to thread ${threadTs} with assignment notification`
+      );
+    } else {
+      console.log(
+        `No thread found, sending assignment notification to channel ${channelId}`
+      );
+    }
+
+    const response = await slack.chat.postMessage(message);
+    console.log(`✅ Assignment notification sent to channel ${channelId}`);
+    return response;
+  } catch (error) {
+    console.error(`Error sending assignment notification:`, error.message);
+    return null;
+  }
+};
+
+module.exports = { sendToSlack, sendAssigneeDM, sendAssignmentToThread };
