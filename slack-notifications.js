@@ -278,6 +278,15 @@ const sendAssigneeDM = async (
       ? "📌 You've been assigned to a task"
       : "🆕 You've been assigned to a new task";
 
+    console.log("Building DM blocks with data:", {
+      title: taskData.title,
+      description: taskData.description,
+      project_name: taskData.project_name,
+      due_date: dueDateText,
+      creator_name: taskData.creator_name,
+      url: taskData.url,
+    });
+
     const blocks = [
       {
         type: "header",
@@ -291,7 +300,7 @@ const sendAssigneeDM = async (
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `*${taskData.title}*`,
+          text: `*${taskData.title.replace(/[*_~>`]/g, "\\$&")}*`,
         },
       },
     ];
@@ -302,7 +311,7 @@ const sendAssigneeDM = async (
         type: "section",
         text: {
           type: "mrkdwn",
-          text: taskData.description,
+          text: taskData.description.replace(/[*_~>`]/g, "\\$&"),
         },
       });
     }
@@ -313,15 +322,21 @@ const sendAssigneeDM = async (
       fields: [
         {
           type: "mrkdwn",
-          text: `*Project:* ${taskData.project_name || "N/A"}`,
+          text: `*Project:* ${(taskData.project_name || "N/A").replace(
+            /[*_~>`]/g,
+            "\\$&"
+          )}`,
         },
         {
           type: "mrkdwn",
-          text: `*Due Date:* ${dueDateText}`,
+          text: `*Due Date:* ${dueDateText.replace(/[*_~>`]/g, "\\$&")}`,
         },
         {
           type: "mrkdwn",
-          text: `*Created by:* ${taskData.creator_name || "Unknown"}`,
+          text: `*Created by:* ${(taskData.creator_name || "Unknown").replace(
+            /[*_~>`]/g,
+            "\\$&"
+          )}`,
         },
       ],
     });

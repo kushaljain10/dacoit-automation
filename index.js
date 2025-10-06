@@ -309,31 +309,58 @@ const processTaskData = async (
 };
 
 const showTaskConfirmation = async (ctx, title, description) => {
-  const confirmationText = `🤖 **AI Processed Task:**
+  try {
+    // Clean up any existing confirmation messages
+    if (ctx.session.flow.confirmationMessages) {
+      await cleanupMessages(ctx, ctx.session.flow.confirmationMessages);
+      ctx.session.flow.confirmationMessages = [];
+    }
 
-**Title:** ${title}
+    const confirmationText = `🤖 *AI Processed Task:*\n\n*Title:* ${title.replace(
+      /[_*[\]()~`>#+\-=|{}.!]/g,
+      "\\$&"
+    )}\n\n*Description:* ${description.replace(
+      /[_*[\]()~`>#+\-=|{}.!]/g,
+      "\\$&"
+    )}\n\nIs this correct?`;
 
-**Description:** ${description}
+    const buttons = [
+      [Markup.button.callback("✅ Confirm", "confirm_task")],
+      [Markup.button.callback("🔄 Rewrite", "rewrite_task")],
+    ];
 
-Is this correct?`;
+    const message = await ctx.reply(confirmationText, {
+      parse_mode: "MarkdownV2",
+      ...Markup.inlineKeyboard(buttons),
+    });
 
-  const buttons = [
-    [Markup.button.callback("✅ Confirm", "confirm_task")],
-    [Markup.button.callback("🔄 Rewrite", "rewrite_task")],
-  ];
+    // Track this message for cleanup
+    if (!ctx.session.flow.confirmationMessages) {
+      ctx.session.flow.confirmationMessages = [];
+    }
+    ctx.session.flow.confirmationMessages.push(message.message_id);
 
-  const message = await ctx.reply(confirmationText, {
-    parse_mode: "Markdown",
-    ...Markup.inlineKeyboard(buttons),
-  });
+    return message;
+  } catch (error) {
+    console.error("Error showing task confirmation:", error);
+    // Try without markdown
+    const message = await ctx.reply(
+      `🤖 AI Processed Task:\n\nTitle: ${title}\n\nDescription: ${description}\n\nIs this correct?`,
+      {
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("✅ Confirm", "confirm_task")],
+          [Markup.button.callback("🔄 Rewrite", "rewrite_task")],
+        ]),
+      }
+    );
 
-  // Track this message for cleanup
-  if (!ctx.session.flow.confirmationMessages) {
-    ctx.session.flow.confirmationMessages = [];
+    if (!ctx.session.flow.confirmationMessages) {
+      ctx.session.flow.confirmationMessages = [];
+    }
+    ctx.session.flow.confirmationMessages.push(message.message_id);
+
+    return message;
   }
-  ctx.session.flow.confirmationMessages.push(message.message_id);
-
-  return message;
 };
 
 const askProject = async (ctx, page = 0) => {
@@ -2260,7 +2287,7 @@ bot.action(/^person_(.+)$/, requireAuth, async (ctx) => {
 
 // Task confirmation actions
 bot.action("confirm_task", requireAuth, async (ctx) => {
-  await ctx.answerCbQuery();
+  await ctx.answerCbQuery("✅ Task confirmed");
 
   console.log("✅ Confirm button clicked", {
     projectId: ctx.session.flow.selections.projectId,
@@ -2279,6 +2306,7 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
   if (!ctx.session.flow.selections.projectId) {
     console.log("No project found, asking user to select");
     ctx.session.flow.step = 3;
+    await ctx.reply("Please select a project for this task:");
     return askProject(ctx);
   }
 
@@ -2293,6 +2321,7 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
         ctx.session.flow.selections.projectId
       );
       ctx.session.flow.step = 4;
+      await ctx.reply("Please select a todo list for this task:");
       return await askTodoList(ctx);
     }
 
@@ -2304,6 +2333,7 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
       if (!ctx.session.flow.selections.dueOn) {
         console.log("No due date found, asking user");
         ctx.session.flow.step = 6;
+        await ctx.reply("When is this task due?");
         return askDueDate(ctx);
       }
 
@@ -2318,6 +2348,10 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
         dueOn,
         slackUserId,
       } = ctx.session.flow.selections;
+
+      // Show creating message
+      const processingMsg = await ctx.reply("⏳ Creating task...");
+
       try {
         const todo = await createTodo(ctx, {
           projectId,
@@ -2342,18 +2376,42 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
           await notifyAssignees(todo, projectName, creatorName);
         }
 
+        // Clean up processing message
+        try {
+          await ctx.deleteMessage(processingMsg.message_id);
+        } catch (deleteError) {
+          console.log(
+            "Could not delete processing message:",
+            deleteError.message
+          );
+        }
+
         await resetFlow(ctx);
         return ctx.reply(
-          `✅ Task created: ${todo.content}\nLink: ${todo.app_url}`
+          `✅ Task created successfully!\n\nTitle: ${todo.content}\nLink: ${todo.app_url}\n\nSend me another message to create a new task.`
         );
       } catch (e) {
         console.error(e?.response?.data || e.message);
+
+        // Clean up processing message
+        try {
+          await ctx.deleteMessage(processingMsg.message_id);
+        } catch (deleteError) {
+          console.log(
+            "Could not delete processing message:",
+            deleteError.message
+          );
+        }
+
         await resetFlow(ctx);
-        return ctx.reply("Sorry, failed to create the task.");
+        return ctx.reply(
+          "❌ Sorry, failed to create the task. Please try again or contact support if the issue persists."
+        );
       }
     } else {
       // Ask for assignee
       ctx.session.flow.step = 5;
+      await ctx.reply("Who should be assigned to this task?");
       return askAssignee(ctx);
     }
   } catch (e) {
@@ -2740,12 +2798,28 @@ app.post("/basecamp/webhook", async (req, res) => {
       url:
         event.kind === "comment_created"
           ? parentTodo?.app_url || event.recording.app_url // Use parent todo URL for comments
-          : event.recording.app_url,
+          : todoDetails?.app_url || event.recording.app_url,
       due_date: todoDetails?.due_on || event.recording.due_on || null,
       completer_name: event.recording.completer?.name,
-      assignees: enrichedAssignees,
+      assignees: enrichedAssignees.map((a) => ({
+        id: a.id,
+        name: a.name,
+        email_address: a.email_address,
+        slack_id: a.slack_id,
+      })),
       content: event.recording.content, // For comments, this is the actual comment text
     };
+
+    console.log("Formatted data for notifications:", {
+      title: data.title,
+      project_name: data.project_name,
+      assignees: data.assignees.map((a) => ({
+        name: a.name,
+        slack_id: a.slack_id,
+      })),
+      url: data.url,
+      due_date: data.due_date,
+    });
 
     console.log("Formatted data for Slack:", {
       title: data.title,
@@ -2760,10 +2834,19 @@ app.post("/basecamp/webhook", async (req, res) => {
     switch (event.kind) {
       case "todo_created":
         // Send new task notification and store the message mapping
+        console.log(
+          "📢 Sending todo_created notification to channel",
+          channelId
+        );
         const createResponse = await sendToSlack(channelId, event.kind, data);
+        console.log("✅ Channel notification sent, response:", {
+          ts: createResponse?.ts,
+          channel: createResponse?.channel,
+        });
 
         // Store the message mapping for future thread replies
         if (createResponse && todoDetails) {
+          console.log("💾 Storing task message mapping");
           await storeTaskMessage(
             todoDetails.id, // Basecamp task ID
             createResponse.ts, // Slack message timestamp (thread_ts)
@@ -2771,6 +2854,35 @@ app.post("/basecamp/webhook", async (req, res) => {
             todoDetails.bucket?.id || event.recording.bucket?.id, // Project ID
             todoDetails.title || event.recording.title // Task title
           );
+          console.log("✅ Task message mapping stored");
+        }
+
+        // Send DMs to assignees
+        if (data.assignees && data.assignees.length > 0) {
+          console.log("📧 Sending DMs to assignees for new task");
+          for (const assignee of data.assignees) {
+            if (assignee.slack_id) {
+              try {
+                const dmResponse = await sendAssigneeDM(
+                  assignee.slack_id,
+                  data,
+                  false
+                );
+                console.log(
+                  `✅ DM sent to ${assignee.name} (${assignee.slack_id})`
+                );
+              } catch (error) {
+                console.error(
+                  `❌ Failed to send DM to ${assignee.name}:`,
+                  error.message
+                );
+              }
+            } else {
+              console.log(
+                `⚠️ No Slack ID for assignee ${assignee.name}, skipping DM`
+              );
+            }
+          }
         }
         break;
 
@@ -2799,21 +2911,46 @@ app.post("/basecamp/webhook", async (req, res) => {
           for (const assignee of enrichedAssignees) {
             if (assignee.slack_id) {
               console.log(
-                `📧 Sending assignment DM to ${assignee.name} (${assignee.slack_id})`
+                `\n📧 Sending assignment DM to ${assignee.name} (${assignee.slack_id})`
               );
 
               try {
-                await sendAssigneeDM(assignee.slack_id, data, true); // true = existing task
-                console.log(`✅ Assignment DM sent to ${assignee.name}`);
+                // Prepare task data for DM
+                const taskData = {
+                  title: data.title,
+                  description: data.description,
+                  project_name: data.project_name,
+                  due_date: data.due_date,
+                  creator_name: data.creator_name,
+                  url: data.url,
+                };
+
+                console.log("Task data for DM:", taskData);
+
+                const dmResponse = await sendAssigneeDM(
+                  assignee.slack_id,
+                  taskData,
+                  true
+                ); // true = existing task
+                if (dmResponse) {
+                  console.log(
+                    `✅ Assignment DM sent to ${assignee.name} (message ts: ${dmResponse.ts})`
+                  );
+                } else {
+                  console.log(
+                    `⚠️ DM to ${assignee.name} returned null response`
+                  );
+                }
               } catch (error) {
                 console.error(
                   `❌ Failed to send DM to ${assignee.name}:`,
-                  error.message
+                  error.message,
+                  error.stack
                 );
               }
             } else {
               console.log(
-                `⚠️ No Slack ID for assignee ${assignee.name}, skipping DM`
+                `⚠️ No Slack ID for assignee ${assignee.name}, skipping DM. Check Airtable record.`
               );
             }
           }
