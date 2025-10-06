@@ -458,7 +458,8 @@ const askTodoList = async (ctx, page = 0) => {
 
     // Create list buttons
     const buttons = currentPageLists.map((l) => {
-      const displayName = l.status === "archived" ? `${l.name} (archived)` : l.name;
+      const displayName =
+        l.status === "archived" ? `${l.name} (archived)` : l.name;
       return [Markup.button.callback(displayName, `list_${l.id}`)];
     });
 
@@ -696,7 +697,9 @@ const createBatchTasks = async (ctx, processedTasks, basecampPeople) => {
       if (processedTask.todoListId) {
         // Use the pre-selected todo list
         list = { id: processedTask.todoListId };
-        console.log(`Using pre-selected todo list ${processedTask.todoListId} for task ${processedTask.title}`);
+        console.log(
+          `Using pre-selected todo list ${processedTask.todoListId} for task ${processedTask.title}`
+        );
       } else {
         // Choose default todo list
         list = await chooseDefaultTodoList(ctx, processedTask.projectId);
@@ -1001,7 +1004,7 @@ const fetchTodoLists = async (ctx, projectId) => {
 // Legacy function - kept for backward compatibility
 const chooseDefaultTodoList = async (ctx, projectId) => {
   const { lists } = await fetchTodoLists(ctx, projectId);
-  
+
   // Pick the first active list; fallback to any
   const open = lists.find((l) => l.status === "active") || lists[0];
   console.log(`Selected default list:`, open);
@@ -1098,9 +1101,11 @@ const notifyAssignees = async (
 
     // Get assignees from the todo response
     const assignees = todo.assignees || [];
-    
+
     if (assignees.length === 0 && !assigneeSlackId) {
-      console.log("⚠️ No assignees to notify (no assignees in todo and no slackUserId provided)");
+      console.log(
+        "⚠️ No assignees to notify (no assignees in todo and no slackUserId provided)"
+      );
       return;
     }
 
@@ -1120,7 +1125,7 @@ const notifyAssignees = async (
         creator_name: creatorName,
         url: todo.app_url,
       };
-      
+
       await sendAssigneeDM(assigneeSlackId, taskData, false);
       console.log(`✅ DM sent successfully to ${assigneeSlackId}`);
       return;
@@ -1145,7 +1150,7 @@ const notifyAssignees = async (
         console.log(
           `📧 Sending DM to ${assignee.name} (Slack ID: ${airtablePerson.slack_id})`
         );
-        
+
         const taskData = {
           title: todo.content || todo.title,
           description: todo.description || "",
@@ -1154,7 +1159,7 @@ const notifyAssignees = async (
           creator_name: creatorName,
           url: todo.app_url,
         };
-        
+
         await sendAssigneeDM(airtablePerson.slack_id, taskData, false);
         console.log(`✅ DM sent successfully to ${assignee.name}`);
       } else {
@@ -1372,26 +1377,58 @@ bot.command("stop", requireAuth, async (ctx) => {
 bot.command("help", requireAuth, async (ctx) => {
   console.log("❓ Help command received from:", ctx.from);
 
-  await ctx.reply(
-    "🤖 *Basecamp Task Bot Help*\n\n" +
-      "🎯 *Creating Tasks:*\n" +
-      "Simply send or forward me any message! No commands needed.\n\n" +
-      "📝 *Examples:*\n" +
-      "• `Fix the login bug - assign to Sarah, due Friday`\n" +
-      "• `Update docs\\nReview code\\nDeploy to staging` (multiple tasks)\n\n" +
-      "🤖 *AI Features:*\n" +
-      "• Automatically detects project names\n" +
-      "• Identifies assignees by name\n" +
-      "• Parses due dates (e.g., 'tomorrow', 'next Monday', '2025-10-15')\n" +
-      "• Handles single or multiple tasks in one message\n\n" +
-      "⚙️ *Commands:*\n" +
-      "• /start - Show welcome message\n" +
-      "• /stop - Cancel current task creation\n" +
-      "• /create_invoice - Create a new invoice\n" +
-      "• /help - Show this help message\n\n" +
-      "_This bot uses AI to make task creation effortless!_",
-    { parse_mode: "Markdown" }
-  );
+  try {
+    await ctx.reply(
+      "🤖 *Basecamp Task Bot Help*\n\n" +
+        "🎯 *Creating Tasks*\n" +
+        "Simply send or forward me any message\\! No commands needed\\.\n\n" +
+        "📝 *Examples*\n" +
+        "• Create single task:\n" +
+        "`Fix the login bug \\- assign to Sarah, due Friday`\n\n" +
+        "• Create multiple tasks:\n" +
+        "`Update docs\nReview code\nDeploy to staging`\n\n" +
+        "🤖 *AI Features*\n" +
+        "• Automatically detects project names\n" +
+        "• Identifies assignees by name\n" +
+        "• Parses due dates \\(tomorrow, next Monday, 2025\\-10\\-15\\)\n" +
+        "• Handles single or multiple tasks\n\n" +
+        "⚙️ *Commands*\n" +
+        "• /start \\- Show welcome message\n" +
+        "• /stop \\- Cancel current task\n" +
+        "• /create\\_invoice \\- Create invoice\n" +
+        "• /help \\- Show this help\n\n" +
+        "_This bot uses AI to make task creation effortless\\!_",
+      {
+        parse_mode: "MarkdownV2",
+        disable_web_page_preview: true,
+      }
+    );
+    console.log("✅ Help message sent successfully");
+  } catch (error) {
+    console.error("❌ Error sending help message:", {
+      error: error.message,
+      description: error.response?.description,
+      payload: error.on?.payload,
+    });
+
+    // Fallback to simpler message without formatting
+    try {
+      await ctx.reply(
+        "🤖 Basecamp Task Bot Help\n\n" +
+          "To create tasks, simply send me a message describing what needs to be done!\n\n" +
+          "Commands:\n" +
+          "/start - Show welcome message\n" +
+          "/stop - Cancel current task\n" +
+          "/create_invoice - Create invoice\n" +
+          "/help - Show this help\n\n" +
+          "This bot uses AI to make task creation effortless!",
+        { parse_mode: undefined }
+      );
+      console.log("✅ Fallback help message sent");
+    } catch (fallbackError) {
+      console.error("❌ Even fallback message failed:", fallbackError.message);
+    }
+  }
 });
 
 bot.command("create_invoice", requireAuth, async (ctx) => {
@@ -1994,7 +2031,11 @@ bot.on("text", requireAuth, async (ctx) => {
     needingInfo.needsDueDate = false;
 
     // Check if current task still needs info
-    if (!needingInfo.needsProject && !needingInfo.needsTodoList && !needingInfo.needsDueDate) {
+    if (
+      !needingInfo.needsProject &&
+      !needingInfo.needsTodoList &&
+      !needingInfo.needsDueDate
+    ) {
       // Move to next task needing info
       f.selections.currentBatchTaskIndex++;
     }
@@ -2049,7 +2090,7 @@ bot.action(/^proj_(\d+)$/, requireAuth, async (ctx) => {
     // Now check if we need to ask for todo list
     try {
       const { lists } = await fetchTodoLists(ctx, projectId);
-      
+
       if (lists.length > 1) {
         // Multiple lists - need to ask user
         needingInfo.needsTodoList = true;
@@ -2057,7 +2098,9 @@ bot.action(/^proj_(\d+)$/, requireAuth, async (ctx) => {
       } else if (lists.length === 1) {
         // Auto-select the only list
         f.selections.batchTasks[taskIndex].todoListId = lists[0].id;
-        console.log(`Auto-selected todo list for task ${taskIndex + 1}: ${lists[0].name}`);
+        console.log(
+          `Auto-selected todo list for task ${taskIndex + 1}: ${lists[0].name}`
+        );
       }
     } catch (error) {
       console.error("Error fetching todo lists for batch task:", error.message);
@@ -2245,7 +2288,10 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
   try {
     // Check if we already have a todo list selected
     if (!ctx.session.flow.selections.todoListId) {
-      console.log("No todo list selected, fetching lists for project", ctx.session.flow.selections.projectId);
+      console.log(
+        "No todo list selected, fetching lists for project",
+        ctx.session.flow.selections.projectId
+      );
       ctx.session.flow.step = 4;
       return await askTodoList(ctx);
     }
@@ -2736,36 +2782,47 @@ app.post("/basecamp/webhook", async (req, res) => {
           hasTodoDetails: !!todoDetails,
           todoId: todoDetails?.id,
           assigneesCount: enrichedAssignees.length,
-          assignees: enrichedAssignees.map(a => ({ name: a.name, slack_id: a.slack_id })),
+          assignees: enrichedAssignees.map((a) => ({
+            name: a.name,
+            slack_id: a.slack_id,
+          })),
         });
-        
+
         // Fetch the full todo details to see current assignees
         if (todoDetails && enrichedAssignees.length > 0) {
-          console.log("✅ Task has assignees after change:", enrichedAssignees.map(a => a.name));
-          
+          console.log(
+            "✅ Task has assignees after change:",
+            enrichedAssignees.map((a) => a.name)
+          );
+
           // Send DM to newly assigned people
           for (const assignee of enrichedAssignees) {
             if (assignee.slack_id) {
               console.log(
                 `📧 Sending assignment DM to ${assignee.name} (${assignee.slack_id})`
               );
-              
+
               try {
                 await sendAssigneeDM(assignee.slack_id, data, true); // true = existing task
                 console.log(`✅ Assignment DM sent to ${assignee.name}`);
               } catch (error) {
-                console.error(`❌ Failed to send DM to ${assignee.name}:`, error.message);
+                console.error(
+                  `❌ Failed to send DM to ${assignee.name}:`,
+                  error.message
+                );
               }
             } else {
-              console.log(`⚠️ No Slack ID for assignee ${assignee.name}, skipping DM`);
+              console.log(
+                `⚠️ No Slack ID for assignee ${assignee.name}, skipping DM`
+              );
             }
           }
-          
+
           // Also send notification to thread/channel for each assignee
           const taskId = todoDetails.id;
           const threadInfo = await getTaskMessage(taskId);
           console.log("Thread info for task:", { taskId, threadInfo });
-          
+
           for (const assignee of enrichedAssignees) {
             if (threadInfo && threadInfo.thread_ts) {
               // Reply to the original thread
@@ -2781,7 +2838,10 @@ app.post("/basecamp/webhook", async (req, res) => {
                 );
                 console.log(`✅ Thread notification sent for ${assignee.name}`);
               } catch (error) {
-                console.error(`❌ Failed to send thread notification for ${assignee.name}:`, error.message);
+                console.error(
+                  `❌ Failed to send thread notification for ${assignee.name}:`,
+                  error.message
+                );
               }
             } else {
               // No thread found, send to channel
@@ -2795,16 +2855,25 @@ app.post("/basecamp/webhook", async (req, res) => {
                   assignee.slack_id,
                   data
                 );
-                console.log(`✅ Channel notification sent for ${assignee.name}`);
+                console.log(
+                  `✅ Channel notification sent for ${assignee.name}`
+                );
               } catch (error) {
-                console.error(`❌ Failed to send channel notification for ${assignee.name}:`, error.message);
+                console.error(
+                  `❌ Failed to send channel notification for ${assignee.name}:`,
+                  error.message
+                );
               }
             }
           }
         } else if (!todoDetails) {
-          console.log("⚠️ No todo details available, skipping assignment notifications");
+          console.log(
+            "⚠️ No todo details available, skipping assignment notifications"
+          );
         } else if (enrichedAssignees.length === 0) {
-          console.log("⚠️ No enriched assignees found (task might have been unassigned or Slack IDs missing)");
+          console.log(
+            "⚠️ No enriched assignees found (task might have been unassigned or Slack IDs missing)"
+          );
         }
         break;
 
