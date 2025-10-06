@@ -1088,19 +1088,30 @@ const notifyAssignees = async (
   assigneeSlackId = null
 ) => {
   try {
+    console.log("📧 notifyAssignees called with:", {
+      taskTitle: todo.content || todo.title,
+      projectName,
+      creatorName,
+      assigneeSlackId,
+      hasAssignees: !!(todo.assignees && todo.assignees.length > 0),
+    });
+
     // Get assignees from the todo response
     const assignees = todo.assignees || [];
-
+    
     if (assignees.length === 0 && !assigneeSlackId) {
-      console.log("No assignees to notify");
+      console.log("⚠️ No assignees to notify (no assignees in todo and no slackUserId provided)");
       return;
     }
 
     // Fetch Airtable people to get Slack IDs
+    console.log("Fetching people from Airtable for Slack ID matching...");
     const airtablePeople = await fetchPeople();
+    console.log(`Found ${airtablePeople.length} people in Airtable`);
 
     // If assigneeSlackId is provided, use it directly
     if (assigneeSlackId) {
+      console.log(`📧 Sending DM using provided Slack ID: ${assigneeSlackId}`);
       const taskData = {
         title: todo.content || todo.title,
         description: todo.description || "",
@@ -1109,8 +1120,9 @@ const notifyAssignees = async (
         creator_name: creatorName,
         url: todo.app_url,
       };
-
+      
       await sendAssigneeDM(assigneeSlackId, taskData, false);
+      console.log(`✅ DM sent successfully to ${assigneeSlackId}`);
       return;
     }
 
@@ -1131,9 +1143,9 @@ const notifyAssignees = async (
 
       if (airtablePerson && airtablePerson.slack_id) {
         console.log(
-          `Sending DM to ${assignee.name} (Slack ID: ${airtablePerson.slack_id})`
+          `📧 Sending DM to ${assignee.name} (Slack ID: ${airtablePerson.slack_id})`
         );
-
+        
         const taskData = {
           title: todo.content || todo.title,
           description: todo.description || "",
@@ -1142,16 +1154,22 @@ const notifyAssignees = async (
           creator_name: creatorName,
           url: todo.app_url,
         };
-
+        
         await sendAssigneeDM(airtablePerson.slack_id, taskData, false);
+        console.log(`✅ DM sent successfully to ${assignee.name}`);
       } else {
         console.log(
           `⚠️ No Slack ID found for assignee ${assignee.name} (${assignee.email_address})`
         );
+        console.log(`   Airtable person found: ${!!airtablePerson}`);
+        if (airtablePerson) {
+          console.log(`   But slack_id is missing in Airtable record`);
+        }
       }
     }
   } catch (error) {
-    console.error("Error notifying assignees:", error.message);
+    console.error("❌ Error notifying assignees:", error.message);
+    console.error("Stack trace:", error.stack);
     // Don't throw - this is not critical
   }
 };
@@ -2201,6 +2219,13 @@ bot.action(/^person_(.+)$/, requireAuth, async (ctx) => {
 bot.action("confirm_task", requireAuth, async (ctx) => {
   await ctx.answerCbQuery();
 
+  console.log("✅ Confirm button clicked", {
+    projectId: ctx.session.flow.selections.projectId,
+    todoListId: ctx.session.flow.selections.todoListId,
+    assigneeId: ctx.session.flow.selections.assigneeId,
+    slackUserId: ctx.session.flow.selections.slackUserId,
+  });
+
   // Clean up confirmation messages
   if (ctx.session.flow.confirmationMessages) {
     await cleanupMessages(ctx, ctx.session.flow.confirmationMessages);
@@ -2220,8 +2245,9 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
   try {
     // Check if we already have a todo list selected
     if (!ctx.session.flow.selections.todoListId) {
+      console.log("No todo list selected, fetching lists for project", ctx.session.flow.selections.projectId);
       ctx.session.flow.step = 4;
-      return askTodoList(ctx);
+      return await askTodoList(ctx);
     }
 
     // Check if AI already extracted assignee - if so, skip to due date check
@@ -2705,52 +2731,80 @@ app.post("/basecamp/webhook", async (req, res) => {
       case "todo_assignees_changed":
       case "todo_changed":
         // Handle assignment changes
-        console.log("Processing assignment change event");
-
+        console.log("🔔 Processing assignment change event");
+        console.log("Todo details:", {
+          hasTodoDetails: !!todoDetails,
+          todoId: todoDetails?.id,
+          assigneesCount: enrichedAssignees.length,
+          assignees: enrichedAssignees.map(a => ({ name: a.name, slack_id: a.slack_id })),
+        });
+        
         // Fetch the full todo details to see current assignees
         if (todoDetails && enrichedAssignees.length > 0) {
-          console.log("Task has assignees after change:", enrichedAssignees);
-
+          console.log("✅ Task has assignees after change:", enrichedAssignees.map(a => a.name));
+          
           // Send DM to newly assigned people
           for (const assignee of enrichedAssignees) {
             if (assignee.slack_id) {
               console.log(
-                `Sending assignment DM to ${assignee.name} (${assignee.slack_id})`
+                `📧 Sending assignment DM to ${assignee.name} (${assignee.slack_id})`
               );
-
-              await sendAssigneeDM(assignee.slack_id, data, true); // true = existing task
+              
+              try {
+                await sendAssigneeDM(assignee.slack_id, data, true); // true = existing task
+                console.log(`✅ Assignment DM sent to ${assignee.name}`);
+              } catch (error) {
+                console.error(`❌ Failed to send DM to ${assignee.name}:`, error.message);
+              }
+            } else {
+              console.log(`⚠️ No Slack ID for assignee ${assignee.name}, skipping DM`);
             }
           }
-
+          
           // Also send notification to thread/channel for each assignee
           const taskId = todoDetails.id;
           const threadInfo = await getTaskMessage(taskId);
-
+          console.log("Thread info for task:", { taskId, threadInfo });
+          
           for (const assignee of enrichedAssignees) {
             if (threadInfo && threadInfo.thread_ts) {
               // Reply to the original thread
               console.log(
-                `Sending assignment notification to thread for ${assignee.name}`
+                `💬 Sending assignment notification to thread for ${assignee.name}`
               );
-              await sendAssignmentToThread(
-                threadInfo.channel_id,
-                threadInfo.thread_ts,
-                assignee.slack_id,
-                data
-              );
+              try {
+                await sendAssignmentToThread(
+                  threadInfo.channel_id,
+                  threadInfo.thread_ts,
+                  assignee.slack_id,
+                  data
+                );
+                console.log(`✅ Thread notification sent for ${assignee.name}`);
+              } catch (error) {
+                console.error(`❌ Failed to send thread notification for ${assignee.name}:`, error.message);
+              }
             } else {
               // No thread found, send to channel
               console.log(
-                `No thread found, sending assignment notification to channel for ${assignee.name}`
+                `📢 No thread found, sending assignment notification to channel for ${assignee.name}`
               );
-              await sendAssignmentToThread(
-                channelId,
-                null,
-                assignee.slack_id,
-                data
-              );
+              try {
+                await sendAssignmentToThread(
+                  channelId,
+                  null,
+                  assignee.slack_id,
+                  data
+                );
+                console.log(`✅ Channel notification sent for ${assignee.name}`);
+              } catch (error) {
+                console.error(`❌ Failed to send channel notification for ${assignee.name}:`, error.message);
+              }
             }
           }
+        } else if (!todoDetails) {
+          console.log("⚠️ No todo details available, skipping assignment notifications");
+        } else if (enrichedAssignees.length === 0) {
+          console.log("⚠️ No enriched assignees found (task might have been unassigned or Slack IDs missing)");
         }
         break;
 
