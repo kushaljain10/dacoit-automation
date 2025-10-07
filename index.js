@@ -23,6 +23,8 @@ const {
   fetchProjectMappings,
   storeTaskMessage,
   getTaskMessage,
+  updatePersonStatus,
+  getTelegramWhitelist,
 } = require("./airtable");
 const { getCustomers, createCustomer, createInvoice } = require("./copperx");
 require("dotenv").config();
@@ -40,15 +42,113 @@ const {
   PORT = process.env.PORT || 3000,
 } = process.env;
 
-const whitelist = new Set(
-  String(WHITELIST || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-);
+// Whitelist will be fetched from Airtable dynamically
+let whitelist = new Set();
+
+// Initialize whitelist from Airtable on startup
+(async () => {
+  try {
+    whitelist = await getTelegramWhitelist();
+    console.log(`✅ Telegram whitelist loaded: ${whitelist.size} users`);
+  } catch (error) {
+    console.error("❌ Failed to load telegram whitelist:", error.message);
+    // Fallback to env variable if Airtable fails
+    whitelist = new Set(
+      String(WHITELIST || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    );
+    console.log(
+      `⚠️ Using fallback whitelist from env: ${whitelist.size} users`
+    );
+  }
+})();
+
 const app = express();
 app.use(express.json()); // Add JSON body parser middleware
 const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
+
+// Set up bot commands
+const commands = [
+  { command: "start", description: "Start the bot and connect Basecamp" },
+  { command: "stop", description: "Cancel current task creation" },
+  { command: "help", description: "Show help and usage instructions" },
+  { command: "create_invoice", description: "Create a new invoice" },
+  { command: "update_status", description: "Update your availability status" },
+];
+
+// Set bot commands
+(async () => {
+  try {
+    await bot.telegram.setMyCommands(commands);
+    console.log(
+      "✅ Bot commands registered:",
+      commands.map((c) => c.command).join(", ")
+    );
+  } catch (error) {
+    console.error("❌ Failed to register bot commands:", error.message);
+  }
+})();
+
+// Debug middleware to log all updates
+bot.use((ctx, next) => {
+  const update = {
+    update_id: ctx.update.update_id,
+    type: ctx.updateType,
+    chat_type: ctx.chat?.type,
+    message: ctx.message
+      ? {
+          text: ctx.message.text,
+          entities: ctx.message.entities?.map((e) => ({
+            type: e.type,
+            offset: e.offset,
+            length: e.length,
+            user: e.user
+              ? {
+                  id: e.user.id,
+                  username: e.user.username,
+                  first_name: e.user.first_name,
+                }
+              : undefined,
+          })),
+          from: {
+            id: ctx.message.from?.id,
+            username: ctx.message.from?.username,
+            first_name: ctx.message.from?.first_name,
+          },
+          chat: {
+            id: ctx.message.chat?.id,
+            type: ctx.message.chat?.type,
+            title: ctx.message.chat?.title,
+          },
+        }
+      : undefined,
+    callback_query: ctx.callbackQuery
+      ? {
+          id: ctx.callbackQuery.id,
+          data: ctx.callbackQuery.data,
+          from: {
+            id: ctx.callbackQuery.from?.id,
+            username: ctx.callbackQuery.from?.username,
+          },
+        }
+      : undefined,
+  };
+
+  console.log("\n📨 Raw update received:", JSON.stringify(update, null, 2));
+  return next();
+});
+
+// Log all errors
+bot.catch((err, ctx) => {
+  console.error("❌ Bot error:", {
+    error: err.message,
+    stack: err.stack,
+    update: ctx.update,
+  });
+});
+
 bot.use(session());
 bot.use((ctx, next) => {
   if (!ctx.session) ctx.session = {};
@@ -88,8 +188,65 @@ store
 
 // Use shared AI processing
 
+/**
+ * Generate AI response for offline user auto-reply
+ */
+const generateOfflineResponse = async (personName, messageText, senderName) => {
+  try {
+    const prompt = `Generate a brief, professional auto-reply message (2-3 sentences max) for this scenario:
+
+${personName} is currently unavailable (offline status).
+${senderName} sent them a message: "${messageText}"
+
+Write a polite auto-reply that:
+1. Informs the sender that ${personName} is currently unavailable
+2. Assures them ${personName} will get back to them soon
+3. Is contextually relevant to the message content
+4. Is friendly and professional
+
+Just provide the response text, no quotes or formatting.`;
+
+    const response = await axios.post(
+      OPENROUTER_API_URL,
+      {
+        model: "anthropic/claude-3.5-sonnet",
+        messages: [
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    const aiReply = response.data.choices[0].message.content.trim();
+    console.log("AI generated offline response:", aiReply);
+
+    return aiReply;
+  } catch (error) {
+    console.error("Error generating AI response:", error.message);
+    // Fallback to generic message
+    return `${personName} is currently unavailable and will get back to you soon. Your message has been forwarded to them.`;
+  }
+};
+
 const requireAuth = async (ctx, next) => {
   const uid = String(ctx.from.id);
+
+  // Refresh whitelist from Airtable periodically (every request for now)
+  try {
+    whitelist = await getTelegramWhitelist();
+  } catch (error) {
+    console.error("Error refreshing whitelist:", error.message);
+    // Continue with cached whitelist
+  }
+
   if (!whitelist.has(uid)) {
     return ctx.reply("Sorry, you are not authorised to use this bot.");
   }
@@ -310,11 +467,27 @@ const processTaskData = async (
 
 const showTaskConfirmation = async (ctx, title, description) => {
   try {
+    console.log("📝 Showing task confirmation for:", { title, description });
+
     // Clean up any existing confirmation messages
-    if (ctx.session.flow.confirmationMessages) {
+    if (ctx.session.flow?.confirmationMessages?.length) {
+      console.log(
+        "🧹 Cleaning up old confirmation messages:",
+        ctx.session.flow.confirmationMessages
+      );
       await cleanupMessages(ctx, ctx.session.flow.confirmationMessages);
       ctx.session.flow.confirmationMessages = [];
     }
+
+    // Store task details in session
+    if (!ctx.session.flow) {
+      ctx.session.flow = { step: 0, selections: {} };
+    }
+    ctx.session.flow.selections = {
+      ...ctx.session.flow.selections,
+      title,
+      description,
+    };
 
     const confirmationText = `🤖 *AI Processed Task:*\n\n*Title:* ${title.replace(
       /[_*[\]()~`>#+\-=|{}.!]/g,
@@ -324,15 +497,19 @@ const showTaskConfirmation = async (ctx, title, description) => {
       "\\$&"
     )}\n\nIs this correct?`;
 
-    const buttons = [
-      [Markup.button.callback("✅ Confirm", "confirm_task")],
-      [Markup.button.callback("🔄 Rewrite", "rewrite_task")],
-    ];
-
+    console.log("💬 Sending confirmation message with buttons");
     const message = await ctx.reply(confirmationText, {
       parse_mode: "MarkdownV2",
-      ...Markup.inlineKeyboard(buttons),
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "✅ Confirm", callback_data: "confirm_task" },
+            { text: "🔄 Rewrite", callback_data: "rewrite_task" },
+          ],
+        ],
+      },
     });
+    console.log("✅ Confirmation message sent:", message.message_id);
 
     // Track this message for cleanup
     if (!ctx.session.flow.confirmationMessages) {
@@ -364,6 +541,7 @@ const showTaskConfirmation = async (ctx, title, description) => {
 };
 
 const askProject = async (ctx, page = 0) => {
+  console.log("\n📂 Showing project selection, page:", page);
   const { access, accountId } = await store.get(String(ctx.from.id));
 
   try {
@@ -376,12 +554,19 @@ const askProject = async (ctx, page = 0) => {
       projects.map((p) => ({ id: p.id, name: p.name, status: p.status }))
     );
 
-    if (!projects.length) return ctx.reply("No projects found.");
+    if (!projects.length) {
+      console.log("❌ No projects found in Basecamp");
+      return ctx.reply(
+        "No projects found in your Basecamp account. Please make sure you have access to at least one project."
+      );
+    }
 
+    console.log("Storing projects in session");
     ctx.session.flow.projects = projects.map((p) => ({
       id: p.id,
       name: p.name,
     }));
+    console.log("Projects stored in session:", ctx.session.flow.projects);
 
     // Pagination logic
     const itemsPerPage = 8; // Show 8 projects + navigation buttons
@@ -420,18 +605,33 @@ const askProject = async (ctx, page = 0) => {
           })`
         : "";
 
-    const message = await ctx.reply(
-      `Choose a project${pageInfo}:`,
-      Markup.inlineKeyboard(buttons)
-    );
+    console.log("Sending project selection message with buttons:", buttons);
+    try {
+      const message = await ctx.reply(
+        `Choose a project${pageInfo}:`,
+        Markup.inlineKeyboard(buttons)
+      );
 
-    // Track this message for cleanup later
-    if (!ctx.session.flow.projectMessages) {
-      ctx.session.flow.projectMessages = [];
+      console.log("Project selection message sent:", {
+        message_id: message.message_id,
+        chat_id: message.chat.id,
+      });
+
+      // Track this message for cleanup later
+      if (!ctx.session.flow.projectMessages) {
+        ctx.session.flow.projectMessages = [];
+      }
+      ctx.session.flow.projectMessages.push(message.message_id);
+      console.log("Message ID stored for cleanup:", message.message_id);
+
+      return message;
+    } catch (error) {
+      console.error("❌ Failed to send project selection message:", error);
+      await ctx.reply(
+        "Sorry, there was an error showing the project list. Please try again or contact support."
+      );
+      throw error;
     }
-    ctx.session.flow.projectMessages.push(message.message_id);
-
-    return message;
   } catch (error) {
     console.error(`Error fetching projects:`, {
       status: error.response?.status,
@@ -445,7 +645,31 @@ const askProject = async (ctx, page = 0) => {
 
 const askTodoList = async (ctx, page = 0) => {
   const f = ctx.session.flow;
-  const projectId = f.selections.projectId;
+
+  // Get projectId based on flow type
+  let projectId;
+  if (f.step === 8) {
+    // Batch task flow - get projectId from the current batch task
+    const needingInfo =
+      f.selections.batchTasksNeedingInfo[f.selections.currentBatchTaskIndex];
+    const taskIndex = needingInfo.index;
+    projectId = f.selections.batchTasks[taskIndex].projectId;
+    console.log(
+      `[Batch Task] Getting todo lists for project ${projectId}, task index ${taskIndex}`
+    );
+  } else {
+    // Single task flow
+    projectId = f.selections.projectId;
+    console.log(`[Single Task] Getting todo lists for project ${projectId}`);
+  }
+
+  if (!projectId) {
+    console.error("❌ No projectId found in session:", {
+      step: f.step,
+      selections: f.selections,
+    });
+    return ctx.reply("❌ Error: No project selected. Please try again.");
+  }
 
   try {
     // Fetch all todo lists for the project
@@ -1401,6 +1625,52 @@ bot.command("stop", requireAuth, async (ctx) => {
   );
 });
 
+bot.command("update_status", requireAuth, async (ctx) => {
+  console.log("🔄 Update status command received from:", ctx.from);
+
+  try {
+    const telegramId = String(ctx.from.id);
+
+    // Fetch current status from Airtable
+    const people = await fetchPeople(true); // Force refresh
+    const person = people.find((p) => p.telegram_id === telegramId);
+
+    if (!person) {
+      return ctx.reply(
+        "❌ Sorry, I couldn't find your profile in the system. Please contact an admin."
+      );
+    }
+
+    const currentStatus = person.tg_status || "offline";
+    const newStatus = currentStatus === "online" ? "offline" : "online";
+    const buttonText =
+      currentStatus === "online" ? "📴 Set to Offline" : "📳 Set to Online";
+    const statusEmoji = currentStatus === "online" ? "🟢" : "⚫";
+
+    await ctx.reply(
+      `${statusEmoji} Your current status: *${currentStatus.toUpperCase()}*\n\nWould you like to change it?`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: buttonText,
+                callback_data: `status_toggle_${newStatus}`,
+              },
+            ],
+          ],
+        },
+      }
+    );
+  } catch (error) {
+    console.error("Error in update_status command:", error);
+    await ctx.reply(
+      "❌ Sorry, there was an error checking your status. Please try again."
+    );
+  }
+});
+
 bot.command("help", requireAuth, async (ctx) => {
   console.log("❓ Help command received from:", ctx.from);
 
@@ -1423,6 +1693,7 @@ bot.command("help", requireAuth, async (ctx) => {
         "• /start \\- Show welcome message\n" +
         "• /stop \\- Cancel current task\n" +
         "• /create\\_invoice \\- Create invoice\n" +
+        "• /update\\_status \\- Update your availability status\n" +
         "• /help \\- Show this help\n\n" +
         "_This bot uses AI to make task creation effortless\\!_",
       {
@@ -1470,7 +1741,7 @@ bot.command("create_invoice", requireAuth, async (ctx) => {
 });
 
 // Handle callback queries for invoice flow
-bot.on("callback_query", requireAuth, async (ctx) => {
+bot.on("callback_query", requireAuth, async (ctx, next) => {
   const data = ctx.callbackQuery.data;
 
   // Handle invoice-related callbacks
@@ -1593,10 +1864,163 @@ bot.on("callback_query", requireAuth, async (ctx) => {
       await ctx.reply("❌ Invoice creation cancelled.");
       return;
     }
+
+    // This is an invoice callback, we've handled it
+    return;
   }
+
+  // Not an invoice callback, pass to next handler
+  return next();
 });
 
-bot.on("text", requireAuth, async (ctx) => {
+// Handle all messages (not just text)
+bot.on(["text", "mention", "text_mention"], async (ctx) => {
+  // Handle group/channel messages (check for mentions of offline users)
+  if (
+    ctx.chat.type === "group" ||
+    ctx.chat.type === "supergroup" ||
+    ctx.chat.type === "channel"
+  ) {
+    console.log("\n👥 Group/Channel message received:", {
+      chat_id: ctx.chat.id,
+      chat_title: ctx.chat.title,
+      from: ctx.from?.username,
+      text: ctx.message.text,
+      entities: ctx.message.entities?.map((e) => ({
+        type: e.type,
+        offset: e.offset,
+        length: e.length,
+        user: e.user,
+      })),
+      raw_message: ctx.message, // Log full message for debugging
+    });
+
+    // Check for mentions in the message
+    if (ctx.message.entities) {
+      // Log all entities for debugging
+      console.log("Message entities:", ctx.message.entities);
+
+      const mentions = [];
+      for (const entity of ctx.message.entities) {
+        if (entity.type === "text_mention" && entity.user) {
+          // Direct mention with user object
+          console.log("Found text_mention:", {
+            user_id: entity.user.id,
+            first_name: entity.user.first_name,
+            username: entity.user.username,
+          });
+          mentions.push(String(entity.user.id));
+        } else if (entity.type === "mention") {
+          // @username mention - need to extract
+          const username = ctx.message.text.substring(
+            entity.offset + 1, // Skip @
+            entity.offset + entity.length
+          );
+          console.log("Found @mention:", username);
+          mentions.push(username);
+        }
+      }
+
+      if (mentions.length > 0) {
+        console.log("📌 Found mentions:", mentions);
+
+        try {
+          const people = await fetchPeople(true); // Force refresh to get latest status
+          console.log(
+            "Fetched people from Airtable:",
+            people.map((p) => ({
+              name: p.name,
+              telegram_id: p.telegram_id,
+              tg_status: p.tg_status,
+            }))
+          );
+
+          for (const mention of mentions) {
+            console.log("Checking mention:", mention);
+
+            // Find person by telegram_id or username
+            const person = people.find((p) => {
+              if (p.telegram_id === mention) {
+                console.log(
+                  `Found person by telegram_id: ${p.name} (${p.tg_status})`
+                );
+                return true;
+              }
+              return false;
+            });
+
+            if (person && person.tg_status === "offline") {
+              console.log(
+                `⚠️ User ${person.name} is offline, sending auto-reply`
+              );
+
+              // Generate AI response for the auto-reply
+              const aiResponse = await generateOfflineResponse(
+                person.name,
+                ctx.message.text,
+                ctx.from?.first_name || ctx.from?.username || "Someone"
+              );
+
+              // Send reply in the channel/group
+              await ctx.reply(aiResponse, {
+                reply_to_message_id: ctx.message.message_id,
+              });
+
+              // Send DM to the offline person
+              if (person.telegram_id) {
+                try {
+                  await bot.telegram.sendMessage(
+                    person.telegram_id,
+                    `📬 *New message in ${ctx.chat.title || "a group"}*\n\n` +
+                      `From: ${
+                        ctx.from?.first_name || ctx.from?.username || "Someone"
+                      }\n\n` +
+                      `Message:\n"${ctx.message.text}"\n\n` +
+                      `_You were mentioned while your status was offline._`,
+                    { parse_mode: "Markdown" }
+                  );
+                  console.log(`✅ DM sent to ${person.name}`);
+                } catch (dmError) {
+                  console.error(
+                    `❌ Failed to send DM to ${person.name}:`,
+                    dmError.message
+                  );
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.error("Error processing mentions:", error);
+        }
+      }
+    }
+
+    // Don't process group messages further for task creation
+    return;
+  }
+
+  // Private chat handling - require auth
+  const uid = String(ctx.from.id);
+
+  // Refresh whitelist from Airtable periodically
+  try {
+    whitelist = await getTelegramWhitelist();
+  } catch (error) {
+    console.error("Error refreshing whitelist:", error.message);
+  }
+
+  if (!whitelist.has(uid)) {
+    return ctx.reply("Sorry, you are not authorised to use this bot.");
+  }
+
+  const saved = await store.get(uid);
+  if (!saved) {
+    const link = `https://launchpad.37signals.com/authorization/new?type=web_server&client_id=${BASECAMP_CLIENT_ID}&redirect_uri=${encodeURIComponent(
+      REDIRECT_URI
+    )}&state=${uid}`;
+    return ctx.reply(`Connect your Basecamp:\n${link}`);
+  }
+
   // Skip processing if this is a command (starts with /)
   if (ctx.message.text?.startsWith("/")) {
     return;
@@ -1850,15 +2274,49 @@ bot.on("text", requireAuth, async (ctx) => {
         }
 
         // Check if any tasks are missing project, todo list, or due date
-        const tasksNeedingInfo = processedTasks
-          .map((task, index) => ({
-            index,
-            task,
-            needsProject: !task.projectId,
-            needsTodoList: false, // Will be set after project selection
-            needsDueDate: !task.dueOn,
-          }))
-          .filter((t) => t.needsProject || t.needsDueDate);
+        const tasksNeedingInfo = [];
+
+        for (let index = 0; index < processedTasks.length; index++) {
+          const task = processedTasks[index];
+          const needsProject = !task.projectId;
+          let needsTodoList = false;
+          const needsDueDate = !task.dueOn;
+
+          // If project is known, check if we need to ask for todo list
+          if (task.projectId && !task.todoListId) {
+            try {
+              const { lists } = await fetchTodoLists(ctx, task.projectId);
+              if (lists.length > 1) {
+                needsTodoList = true;
+                console.log(
+                  `Task "${task.title}" needs todo list selection (${lists.length} lists available)`
+                );
+              } else if (lists.length === 1) {
+                // Auto-select the only list
+                task.todoListId = lists[0].id;
+                console.log(
+                  `Task "${task.title}" auto-selected todo list: ${lists[0].name}`
+                );
+              }
+            } catch (error) {
+              console.error(
+                `Error checking todo lists for task "${task.title}":`,
+                error.message
+              );
+            }
+          }
+
+          // Add to needingInfo if any info is missing
+          if (needsProject || needsTodoList || needsDueDate) {
+            tasksNeedingInfo.push({
+              index,
+              task,
+              needsProject,
+              needsTodoList,
+              needsDueDate,
+            });
+          }
+        }
 
         if (tasksNeedingInfo.length > 0) {
           // Delete the processing message
@@ -2287,42 +2745,62 @@ bot.action(/^person_(.+)$/, requireAuth, async (ctx) => {
 
 // Task confirmation actions
 bot.action("confirm_task", requireAuth, async (ctx) => {
-  await ctx.answerCbQuery("✅ Task confirmed");
-
-  console.log("✅ Confirm button clicked", {
-    projectId: ctx.session.flow.selections.projectId,
-    todoListId: ctx.session.flow.selections.todoListId,
-    assigneeId: ctx.session.flow.selections.assigneeId,
-    slackUserId: ctx.session.flow.selections.slackUserId,
-  });
-
-  // Clean up confirmation messages
-  if (ctx.session.flow.confirmationMessages) {
-    await cleanupMessages(ctx, ctx.session.flow.confirmationMessages);
-    ctx.session.flow.confirmationMessages = [];
-  }
-
-  // Check if project is missing - if so, ask for it
-  if (!ctx.session.flow.selections.projectId) {
-    console.log("No project found, asking user to select");
-    ctx.session.flow.step = 3;
-    await ctx.reply("Please select a project for this task:");
-    return askProject(ctx);
-  }
-
-  console.log("Using AI-extracted project, proceeding with task creation");
-
-  // Get todo lists for the project - will ask user if multiple
   try {
-    // Check if we already have a todo list selected
-    if (!ctx.session.flow.selections.todoListId) {
-      console.log(
-        "No todo list selected, fetching lists for project",
-        ctx.session.flow.selections.projectId
+    console.log("\n🔄 Processing confirm_task action");
+    console.log("Callback query data:", ctx.callbackQuery.data);
+    console.log("Session state:", {
+      step: ctx.session.flow?.step,
+      title: ctx.session.flow?.selections?.title,
+      projectId: ctx.session.flow?.selections?.projectId,
+      todoListId: ctx.session.flow?.selections?.todoListId,
+    });
+
+    // Acknowledge the callback query immediately
+    await ctx.answerCbQuery("✅ Task confirmed");
+
+    // Validate session
+    if (!ctx.session.flow?.selections?.title) {
+      console.error("❌ Invalid session state:", ctx.session.flow);
+      await ctx.reply(
+        "Sorry, there was an error. Please send your task description again."
       );
+      return;
+    }
+
+    // Delete the confirmation message
+    try {
+      await ctx.deleteMessage();
+      console.log("✅ Deleted confirmation message");
+    } catch (error) {
+      console.error("Failed to delete confirmation message:", error);
+    }
+
+    // Clear any tracked confirmation messages
+    if (ctx.session.flow.confirmationMessages?.length) {
+      try {
+        await cleanupMessages(ctx, ctx.session.flow.confirmationMessages);
+      } catch (error) {
+        console.error("Failed to cleanup confirmation messages:", error);
+      }
+      ctx.session.flow.confirmationMessages = [];
+    }
+
+    // Check if we need project selection
+    if (!ctx.session.flow.selections.projectId) {
+      console.log("No project selected, showing project selection");
+      ctx.session.flow.step = 3;
+      await ctx.reply("Please select a project for this task:");
+      await askProject(ctx);
+      return;
+    }
+
+    // Check if we need todo list selection
+    if (!ctx.session.flow.selections.todoListId) {
+      console.log("No todo list selected, showing todo list selection");
       ctx.session.flow.step = 4;
       await ctx.reply("Please select a todo list for this task:");
-      return await askTodoList(ctx);
+      await askTodoList(ctx);
+      return;
     }
 
     // Check if AI already extracted assignee - if so, skip to due date check
@@ -2418,6 +2896,38 @@ bot.action("confirm_task", requireAuth, async (ctx) => {
     console.error(e?.response?.data || e.message);
     return ctx.reply(
       "Could not find or create a to-do list in that project. Please check project permissions."
+    );
+  }
+});
+
+// Status toggle handler
+bot.action(/^status_toggle_(.+)$/, requireAuth, async (ctx) => {
+  const newStatus = ctx.match[1];
+  const telegramId = String(ctx.from.id);
+
+  try {
+    await ctx.answerCbQuery("Updating status...");
+
+    const result = await updatePersonStatus(telegramId, newStatus);
+
+    if (!result) {
+      return ctx.editMessageText(
+        "❌ Sorry, I couldn't update your status. Please contact an admin."
+      );
+    }
+
+    const statusEmoji = newStatus === "online" ? "🟢" : "⚫";
+    await ctx.editMessageText(
+      `${statusEmoji} Status updated successfully!\n\nYour status is now: *${newStatus.toUpperCase()}*`,
+      { parse_mode: "Markdown" }
+    );
+
+    console.log(`✅ Status updated for ${result.name}: ${newStatus}`);
+  } catch (error) {
+    console.error("Error updating status:", error);
+    await ctx.answerCbQuery("❌ Error updating status");
+    await ctx.editMessageText(
+      "❌ Sorry, there was an error updating your status. Please try again."
     );
   }
 });

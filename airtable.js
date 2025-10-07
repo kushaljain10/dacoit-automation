@@ -40,10 +40,13 @@ const fetchPeople = async (forceRefresh = false) => {
 
     cachedPeople = records
       .map((record) => ({
+        id: record.id, // Airtable record ID for updates
         name: record.get("name"),
         email: record.get("email"),
         slack_id: record.get("slack_id"),
         basecamp_id: record.get("basecamp_id"),
+        telegram_id: record.get("telegram_id"),
+        tg_status: record.get("tg_status") || "offline", // Default to offline
       }))
       .filter((person) => person.name && person.email); // Filter out incomplete records
 
@@ -213,10 +216,74 @@ const getTaskMessage = async (basecampTaskId) => {
   }
 };
 
+/**
+ * Update a person's Telegram status in Airtable
+ */
+const updatePersonStatus = async (telegramId, newStatus) => {
+  try {
+    console.log(
+      `Updating Telegram status for ${telegramId} to ${newStatus}...`
+    );
+
+    // First, find the record with this telegram_id
+    const records = await base(process.env.AIRTABLE_PEOPLE_TABLE || "people")
+      .select({
+        filterByFormula: `{telegram_id} = '${telegramId}'`,
+        maxRecords: 1,
+      })
+      .firstPage();
+
+    if (records.length === 0) {
+      console.log(`⚠️ No person found with telegram_id ${telegramId}`);
+      return null;
+    }
+
+    const record = records[0];
+    await base(process.env.AIRTABLE_PEOPLE_TABLE || "people").update(
+      record.id,
+      {
+        tg_status: newStatus,
+      }
+    );
+
+    console.log(`✅ Updated status for ${record.get("name")} to ${newStatus}`);
+
+    // Clear cache to ensure fresh data
+    clearCache();
+
+    return {
+      name: record.get("name"),
+      telegram_id: telegramId,
+      tg_status: newStatus,
+    };
+  } catch (error) {
+    console.error("Error updating person status:", error.message);
+    throw error;
+  }
+};
+
+/**
+ * Get whitelist of telegram IDs from Airtable
+ */
+const getTelegramWhitelist = async () => {
+  try {
+    const people = await fetchPeople();
+    const telegramIds = people.map((p) => p.telegram_id).filter((id) => id); // Filter out empty/null values
+
+    console.log(`📋 Telegram whitelist: ${telegramIds.length} IDs`);
+    return new Set(telegramIds.map(String)); // Convert to Set of strings
+  } catch (error) {
+    console.error("Error fetching telegram whitelist:", error.message);
+    return new Set(); // Return empty set on error
+  }
+};
+
 module.exports = {
   fetchPeople,
   fetchProjectMappings,
   clearCache,
   storeTaskMessage,
   getTaskMessage,
+  updatePersonStatus,
+  getTelegramWhitelist,
 };
