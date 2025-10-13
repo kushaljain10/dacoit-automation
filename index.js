@@ -1876,7 +1876,8 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
   if (
     data.startsWith("customer_") ||
     data.startsWith("invoice_") ||
-    data.startsWith("currency_")
+    data.startsWith("currency_") ||
+    data.startsWith("finalize_")
   ) {
     await ctx.answerCbQuery(); // Acknowledge the button press
 
@@ -2008,8 +2009,30 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
           }
         );
 
-        // Reset flow
-        delete ctx.session.invoiceFlow;
+        // Ask if user wants to finalize the invoice
+        const finalizeButtons = [
+          [
+            {
+              text: "✅ Yes, Finalize Invoice",
+              callback_data: `finalize_${invoice.id}`,
+            },
+            { text: "❌ No, Keep as Draft", callback_data: "finalize_no" },
+          ],
+        ];
+
+        await ctx.reply(
+          "📋 *Invoice Finalization*\n\n" +
+            "Would you like to finalize this invoice? Finalizing will make it ready for payment\\.\n\n" +
+            "• *Yes*: Finalize the invoice now\n" +
+            "• *No*: Keep it as a draft",
+          {
+            parse_mode: "MarkdownV2",
+            reply_markup: { inline_keyboard: finalizeButtons },
+          }
+        );
+
+        // Store invoice ID for finalization
+        ctx.session.invoiceFlow.finalizeInvoiceId = invoice.id;
       } catch (error) {
         console.error("Error creating invoice:", error);
         await ctx.reply(
@@ -2203,6 +2226,51 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
     if (data === "invoice_cancel") {
       resetInvoiceFlow(ctx);
       await ctx.reply("❌ Invoice creation cancelled.");
+      return;
+    }
+
+    // Handle invoice finalization
+    if (data.startsWith("finalize_")) {
+      if (data === "finalize_no") {
+        await ctx.reply(
+          "✅ Invoice kept as draft. You can finalize it later from the CopperX dashboard."
+        );
+        resetInvoiceFlow(ctx);
+        return;
+      }
+
+      // Extract invoice ID from callback data
+      const invoiceId = data.replace("finalize_", "");
+
+      try {
+        await ctx.reply("⏳ Finalizing invoice...");
+
+        // Call the finalize API
+        const response = await copperx.invoiceController_finalizeInvoice({
+          id: invoiceId,
+        });
+
+        await ctx.reply(
+          `✅ *Invoice finalized successfully\\!*\n\n` +
+            `Invoice ID: \`${invoiceId}\`\n` +
+            `Status: Finalized\n\n` +
+            `The invoice is now ready for payment\\.`,
+          {
+            parse_mode: "MarkdownV2",
+          }
+        );
+
+        console.log("Invoice finalized:", response.data);
+      } catch (error) {
+        console.error("Error finalizing invoice:", error);
+        await ctx.reply(
+          "❌ Failed to finalize invoice. Please try again or contact support.\n\n" +
+            `Error: ${error.response?.data?.message || error.message}`
+        );
+      }
+
+      // Reset flow after finalization
+      resetInvoiceFlow(ctx);
       return;
     }
 
