@@ -340,6 +340,14 @@ const resetFlow = async (ctx) => {
   ctx.session.flow = { step: 0, selections: {} };
 };
 
+// Reset invoice creation flow
+const resetInvoiceFlow = (ctx) => {
+  if (ctx.session.invoiceFlow) {
+    console.log("🛑 Resetting invoice creation flow");
+    delete ctx.session.invoiceFlow;
+  }
+};
+
 const cleanupMessages = async (ctx, messageIds) => {
   if (!messageIds || !Array.isArray(messageIds)) return;
 
@@ -1491,24 +1499,6 @@ const notifyAssignees = async (
 
 /** ------------ Invoice Creation Helpers ------------ **/
 
-const resetInvoiceFlow = (ctx) => {
-  ctx.session.invoiceFlow = {
-    step: 0,
-    data: {
-      customerId: null,
-      customerName: null,
-      currency: null,
-      dueDate: null,
-      lineItems: [],
-    },
-    newCustomer: {},
-    pagination: {
-      offset: 0,
-      limit: 10,
-    },
-  };
-};
-
 const askCustomer = async (ctx, offset = 0) => {
   try {
     const limit = 10;
@@ -1676,10 +1666,13 @@ bot.command("stop", requireAuth, async (ctx) => {
   // Clean up any ongoing flow messages
   await resetFlow(ctx);
 
+  // Reset invoice flow if active
+  resetInvoiceFlow(ctx);
+
   await ctx.reply(
     "🛑 *Conversation stopped.*\n\n" +
-      "Your current task creation has been cancelled and all data cleared.\n\n" +
-      "Just send me a new message to create another task!",
+      "Your current task creation or invoice creation has been cancelled and all data cleared.\n\n" +
+      "Just send me a new message to create another task or use /create_invoice for invoices!",
     { parse_mode: "Markdown" }
   );
 });
@@ -2044,7 +2037,6 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
     }
 
     if (data.startsWith("customer_confirm_")) {
-      await ctx.answerCbQuery();
       const customerId = data.replace("customer_confirm_", "");
       const customers = await getCustomers({ limit: 100 });
       const customer = customers.find((c) => c.id === customerId);
@@ -2088,7 +2080,6 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
     }
 
     if (data === "customer_confirm_no") {
-      await ctx.answerCbQuery();
       ctx.session.invoiceFlow.step = 2;
       ctx.session.invoiceFlow.newCustomer = {};
       await ctx.reply(
@@ -2101,7 +2092,6 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
 
     // Handle customer creation confirmation
     if (data === "customer_create_confirm") {
-      await ctx.answerCbQuery();
       await ctx.reply("⏳ Creating customer...");
 
       try {
