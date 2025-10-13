@@ -1953,7 +1953,6 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
             data: ctx.session.invoiceFlow.lineItems.map((item) => ({
               priceData: {
                 currency: ctx.session.invoiceFlow.currency,
-                customerId: ctx.session.invoiceFlow.customer.id,
                 productData: {
                   name: item.name,
                 },
@@ -1965,10 +1964,19 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
           paymentSetting: {
             allowSwap: false,
           },
+          customerId: ctx.session.invoiceFlow.customer.id,
         };
 
         console.log("Creating invoice with data:", invoiceData);
         console.log("Customer being used:", ctx.session.invoiceFlow.customer);
+        console.log(
+          "Customer ID being used:",
+          ctx.session.invoiceFlow.customer?.id
+        );
+        console.log(
+          "Full session invoiceFlow:",
+          JSON.stringify(ctx.session.invoiceFlow, null, 2)
+        );
         const { data: invoice } = await invoiceController_create(invoiceData);
         console.log("Invoice created:", invoice);
 
@@ -2049,6 +2057,11 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
       ctx.session.invoiceFlow.customer = customer;
       ctx.session.invoiceFlow.step = 5; // Move to currency selection
       console.log("Customer selected and stored:", customer);
+      console.log("Customer ID stored:", customer.id);
+      console.log(
+        "Session after customer selection:",
+        JSON.stringify(ctx.session.invoiceFlow, null, 2)
+      );
       await ctx.answerCbQuery("✅ Customer selected");
 
       // Show currency selection
@@ -2113,6 +2126,14 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
         console.log(
           "New customer created and stored:",
           ctx.session.invoiceFlow.customer
+        );
+        console.log(
+          "New customer ID stored:",
+          ctx.session.invoiceFlow.customer.id
+        );
+        console.log(
+          "Session after customer creation:",
+          JSON.stringify(ctx.session.invoiceFlow, null, 2)
         );
 
         ctx.session.invoiceFlow.step = 5; // Move to currency selection
