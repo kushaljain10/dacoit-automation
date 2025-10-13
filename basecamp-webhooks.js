@@ -1,5 +1,5 @@
-const axios = require("axios");
-const { bc } = require("./basecamp");
+import axios from "axios";
+import { bc } from "./basecamp.js";
 
 // Function to create a webhook for a project
 const createWebhookForProject = async (accountId, projectId, access_token) => {
@@ -108,7 +108,7 @@ const listProjectWebhooks = async (accountId, projectId, access_token) => {
   }
 };
 
-module.exports = {
+export {
   setupWebhooksForAllProjects,
   createWebhookForProject,
   listProjectWebhooks,

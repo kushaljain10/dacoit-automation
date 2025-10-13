@@ -1,5 +1,5 @@
-const Airtable = require("airtable");
-const CryptoJS = require("crypto-js");
+import Airtable from "airtable";
+import CryptoJS from "crypto-js";
 
 /**
  * AirtableAuthStore - Securely stores Basecamp authentication data in Airtable
@@ -239,4 +239,4 @@ class AirtableAuthStore {
   }
 }
 
-module.exports = { AirtableAuthStore };
+export { AirtableAuthStore };

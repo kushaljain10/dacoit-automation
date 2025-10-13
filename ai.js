@@ -1,5 +1,6 @@
-const axios = require("axios");
-require("dotenv").config();
+import axios from "axios";
+import dotenv from "dotenv";
+dotenv.config();
 
 const OPENROUTER_API_URL =
   process.env.OPENROUTER_API_URL ||
@@ -258,4 +259,4 @@ User message: "${message.replace(/"/g, '\\"')}"`;
   }
 };
 
-module.exports = { processTaskWithAI };
+export { processTaskWithAI };

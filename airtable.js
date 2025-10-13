@@ -1,4 +1,4 @@
-const Airtable = require("airtable");
+import Airtable from "airtable";
 
 // Initialize Airtable with Personal Access Token
 const base = new Airtable({
@@ -278,7 +278,7 @@ const getTelegramWhitelist = async () => {
   }
 };
 
-module.exports = {
+export {
   fetchPeople,
   fetchProjectMappings,
   clearCache,

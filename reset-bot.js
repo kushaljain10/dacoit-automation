@@ -1,6 +1,8 @@
 // Reset Telegram Bot - Clear webhooks and conflicts
-require("dotenv").config();
-const { Telegraf } = require("telegraf");
+import dotenv from "dotenv";
+import { Telegraf } from "telegraf";
+
+dotenv.config();
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 

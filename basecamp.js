@@ -1,4 +1,4 @@
-const axios = require("axios");
+import axios from "axios";
 
 // Create Basecamp API client with auth token
 const bc = (token) => {
@@ -13,4 +13,4 @@ const bc = (token) => {
   });
 };
 
-module.exports = { bc };
+export { bc };

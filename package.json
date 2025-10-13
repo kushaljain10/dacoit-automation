@@ -20,7 +20,9 @@
   ],
   "author": "",
   "license": "ISC",
+  "type": "module",
   "dependencies": {
+    "@api/copperx": "file:.api/apis/copperx",
     "@slack/bolt": "^4.4.0",
     "@slack/web-api": "^7.10.0",
     "airtable": "^0.12.2",

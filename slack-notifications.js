@@ -1,4 +1,4 @@
-const { WebClient } = require("@slack/web-api");
+import { WebClient } from "@slack/web-api";
 
 // Initialize Slack Web Client
 const slack = new WebClient(process.env.SLACK_BOT_TOKEN);
@@ -425,4 +425,4 @@ const sendAssignmentToThread = async (
   }
 };
 
-module.exports = { sendToSlack, sendAssigneeDM, sendAssignmentToThread };
+export { sendToSlack, sendAssigneeDM, sendAssignmentToThread };

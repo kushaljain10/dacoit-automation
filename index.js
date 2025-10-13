@@ -1,34 +1,92 @@
-const express = require("express");
-const axios = require("axios");
-const qs = require("qs");
-const { Telegraf, Markup, session } = require("telegraf");
-const dayjs = require("dayjs");
-const customParseFormat = require("dayjs/plugin/customParseFormat");
-const fs = require("fs");
-const path = require("path");
-const { processTaskWithAI } = require("./ai");
-const { AirtableAuthStore } = require("./airtable-store");
-const { bc } = require("./basecamp");
-const {
+import express from "express";
+import axios from "axios";
+import qs from "qs";
+import { Telegraf, Markup, session } from "telegraf";
+import dayjs from "dayjs";
+import customParseFormat from "dayjs/plugin/customParseFormat.js";
+import fs from "fs";
+import path from "path";
+import { processTaskWithAI } from "./ai.js";
+import { AirtableAuthStore } from "./airtable-store.js";
+import { bc } from "./basecamp.js";
+import {
   sendToSlack,
   sendAssigneeDM,
   sendAssignmentToThread,
-} = require("./slack-notifications");
-const {
+} from "./slack-notifications.js";
+import {
   setupWebhooksForAllProjects,
   listProjectWebhooks,
-} = require("./basecamp-webhooks");
-const {
+} from "./basecamp-webhooks.js";
+import {
   fetchPeople,
   fetchProjectMappings,
   storeTaskMessage,
   getTaskMessage,
   updatePersonStatus,
   getTelegramWhitelist,
-} = require("./airtable");
-const { getCustomers, createCustomer, createInvoice } = require("./copperx");
-require("dotenv").config();
+} from "./airtable.js";
+import {
+  getCustomers,
+  createCustomer,
+  createInvoice,
+  invoiceController_create,
+  testCopperXAPI,
+} from "./copperx.js";
+import copperx from "@api/copperx/index.js";
+import dotenv from "dotenv";
+dotenv.config();
 dayjs.extend(customParseFormat);
+
+// Test CopperX API at startup
+(async () => {
+  console.log("\n🔧 Testing CopperX API connectivity...");
+  try {
+    const apiTestResults = await testCopperXAPI();
+
+    console.log("\n📊 CopperX API Status:");
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    const formatStatus = (status, error) => {
+      if (status === "success") return "✅ Working";
+      if (status === "failed") return `❌ Failed${error ? `: ${error}` : ""}`;
+      return "⚠️ Unknown";
+    };
+
+    console.log(
+      `GET /customers:  ${formatStatus(
+        apiTestResults.customersGet.status,
+        apiTestResults.customersGet.error
+      )}`
+    );
+    console.log(
+      `POST /customers: ${formatStatus(
+        apiTestResults.customersPost.status,
+        apiTestResults.customersPost.error
+      )}`
+    );
+    console.log(
+      `POST /invoices:  ${formatStatus(
+        apiTestResults.invoicesPost.status,
+        apiTestResults.invoicesPost.error
+      )}`
+    );
+    console.log(
+      `Authentication: ${formatStatus(
+        apiTestResults.authMe.status,
+        apiTestResults.authMe.error
+      )}`
+    );
+
+    if (apiTestResults.error) {
+      console.log(`General Error: ${apiTestResults.error}`);
+    }
+
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+  } catch (error) {
+    console.error("❌ Failed to test CopperX API:", error.message);
+  }
+})();
 
 const {
   TELEGRAM_BOT_TOKEN,
@@ -75,6 +133,7 @@ const commands = [
   { command: "stop", description: "Cancel current task creation" },
   { command: "help", description: "Show help and usage instructions" },
   { command: "create_invoice", description: "Create a new invoice" },
+  { command: "test_api", description: "Test CopperX API connectivity" },
   { command: "update_status", description: "Update your availability status" },
 ];
 
@@ -1729,23 +1788,103 @@ bot.command("help", requireAuth, async (ctx) => {
   }
 });
 
+// Helper function to convert amount to USDC with 8 decimal places
+const toUSDC = (amount) => {
+  // Convert amount to number with 8 decimal places
+  return Math.round(parseFloat(amount) * 100000000);
+};
+
+// Helper function to format USDC amount for display
+const formatUSDC = (amount) => {
+  // Convert from 8 decimal places to regular number
+  return (amount / 100000000).toFixed(2);
+};
+
+bot.command("test_api", requireAuth, async (ctx) => {
+  console.log("🧪 Test API command received from:", ctx.from);
+
+  try {
+    await ctx.reply("🧪 Testing CopperX API endpoints...");
+
+    const apiTestResults = await testCopperXAPI();
+
+    let responseMessage = "*CopperX API Test Results:*\n\n";
+
+    const formatStatus = (status, error) => {
+      if (status === "success") return "✅ Working";
+      if (status === "failed")
+        return `❌ Failed${error ? `\n   Error: ${error}` : ""}`;
+      return "⚠️ Unknown";
+    };
+
+    responseMessage += `GET /customers: ${formatStatus(
+      apiTestResults.customersGet.status,
+      apiTestResults.customersGet.error
+    )}\n\n`;
+    responseMessage += `POST /customers: ${formatStatus(
+      apiTestResults.customersPost.status,
+      apiTestResults.customersPost.error
+    )}\n\n`;
+    responseMessage += `POST /invoices: ${formatStatus(
+      apiTestResults.invoicesPost.status,
+      apiTestResults.invoicesPost.error
+    )}\n\n`;
+    responseMessage += `GET /api/v1/auth/me: ${formatStatus(
+      apiTestResults.authMe.status,
+      apiTestResults.authMe.error
+    )}\n\n`;
+
+    if (apiTestResults.error) {
+      responseMessage += `\n*General Error:* ${apiTestResults.error}`;
+    }
+
+    await ctx.reply(responseMessage, { parse_mode: "Markdown" });
+  } catch (error) {
+    console.error("Error testing API:", error);
+    await ctx.reply("❌ Failed to test API. Check bot logs for details.");
+  }
+});
+
 bot.command("create_invoice", requireAuth, async (ctx) => {
   console.log("💰 Create invoice command received from:", ctx.from);
-  ctx.session ??= {};
-  ctx.session.invoiceFlow ??= {};
-  resetInvoiceFlow(ctx);
-  ctx.session.invoiceFlow.step = 1; // Start invoice flow
 
-  await ctx.reply("🧾 *Creating a new invoice...*", { parse_mode: "Markdown" });
-  await askCustomer(ctx, 0);
+  // Initialize invoice flow
+  ctx.session ??= {};
+  ctx.session.invoiceFlow = {
+    step: 1, // 1: Choose customer action, 2-4: New customer flow, 5: Currency selection, 6+: Line items
+    lineItems: [],
+    currentItem: null,
+    customer: null,
+    currency: null, // Global currency for all items
+  };
+
+  const buttons = [
+    [
+      { text: "🔍 Select Existing Customer", callback_data: "customer_select" },
+      { text: "➕ Create New Customer", callback_data: "customer_create" },
+    ],
+  ];
+
+  const welcomeMessage =
+    "🧾 *Create New Invoice*\n\n" +
+    "First, let's select a customer for this invoice\\. Would you like to select an existing customer or create a new one?";
+
+  await ctx.reply(welcomeMessage, {
+    parse_mode: "MarkdownV2",
+    reply_markup: { inline_keyboard: buttons },
+  });
 });
 
 // Handle callback queries for invoice flow
 bot.on("callback_query", requireAuth, async (ctx, next) => {
   const data = ctx.callbackQuery.data;
 
-  // Handle invoice-related callbacks
-  if (data.startsWith("invoice_")) {
+  // Handle customer-related callbacks
+  if (
+    data.startsWith("customer_") ||
+    data.startsWith("invoice_") ||
+    data.startsWith("currency_")
+  ) {
     await ctx.answerCbQuery(); // Acknowledge the button press
 
     ctx.session ??= {};
@@ -1817,38 +1956,59 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
 
       try {
         const invoiceData = {
-          customerId: ctx.session.invoiceFlow.data.customerId,
-          currency: ctx.session.invoiceFlow.data.currency,
-          dueDate: ctx.session.invoiceFlow.data.dueDate,
-          lineItems: ctx.session.invoiceFlow.data.lineItems.map((item) => ({
-            name: item.name,
-            price: parseFloat(item.price),
-          })),
+          lineItems: {
+            data: ctx.session.invoiceFlow.lineItems.map((item) => ({
+              priceData: {
+                currency: ctx.session.invoiceFlow.currency,
+                customerId: ctx.session.invoiceFlow.customer.id,
+                productData: {
+                  name: item.name,
+                },
+                unitAmount: item.amount, // Already in correct format with 8 decimals
+              },
+              quantity: item.quantity,
+            })),
+          },
+          paymentSetting: {
+            allowSwap: false,
+          },
         };
 
-        const invoice = await createInvoice(invoiceData);
+        console.log("Creating invoice with data:", invoiceData);
+        console.log("Customer being used:", ctx.session.invoiceFlow.customer);
+        const { data: invoice } = await invoiceController_create(invoiceData);
+        console.log("Invoice created:", invoice);
 
-        const total = ctx.session.invoiceFlow.data.lineItems.reduce(
-          (sum, item) => sum + parseFloat(item.price),
+        // Calculate total
+        const total = ctx.session.invoiceFlow.lineItems.reduce(
+          (sum, item) => sum + (item.amount * item.quantity) / 100000000,
           0
         );
 
+        // Calculate totals from the invoice response
+        const totalAmount = (parseInt(invoice.total) / 100000000).toFixed(2);
+        const currency = invoice.currency.toUpperCase();
+
         await ctx.reply(
-          `✅ *Invoice created successfully!*\n\n` +
+          `✅ *Invoice created successfully\\!*\n\n` +
             `Invoice ID: \`${invoice.id}\`\n` +
-            `Customer: ${ctx.session.invoiceFlow.data.customerName}\n` +
-            `Currency: ${invoiceData.currency.toUpperCase()}\n` +
-            `Due Date: ${invoiceData.dueDate}\n` +
-            `Total: $${total.toFixed(2)}\n\n` +
+            `Total: ${totalAmount.replace(/\./g, "\\.")} ${currency}\n\n` +
             `${
-              invoice.hostedInvoiceUrl
-                ? `🔗 [View Invoice](${invoice.hostedInvoiceUrl})`
+              invoice.hostedUrl
+                ? `🔗 [View Invoice](${invoice.hostedUrl.replace(
+                    /[_*[\]()~`>#+=|{}.!-]/g,
+                    "\\$&"
+                  )})`
                 : ""
             }`,
-          { parse_mode: "Markdown" }
+          {
+            parse_mode: "MarkdownV2",
+            disable_web_page_preview: true,
+          }
         );
 
-        resetInvoiceFlow(ctx);
+        // Reset flow
+        delete ctx.session.invoiceFlow;
       } catch (error) {
         console.error("Error creating invoice:", error);
         await ctx.reply(
@@ -1856,6 +2016,176 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
             `Error: ${error.response?.data?.message || error.message}`
         );
       }
+      return;
+    }
+
+    // Handle customer selection/creation
+    if (data === "customer_select") {
+      ctx.session.invoiceFlow.step = 2;
+      await ctx.answerCbQuery();
+      await ctx.reply(
+        "Please enter the customer's name to search\\. I'll look for matching customers\\.",
+        { parse_mode: "MarkdownV2" }
+      );
+      return;
+    }
+
+    if (data === "customer_create") {
+      ctx.session.invoiceFlow.step = 2;
+      ctx.session.invoiceFlow.newCustomer = {};
+      await ctx.answerCbQuery();
+      await ctx.reply(
+        "Let's create a new customer\\.\n\n" +
+          "I'll ask for the customer's details step by step:\n\n" +
+          "*Please enter the customer's name:*",
+        { parse_mode: "MarkdownV2" }
+      );
+      return;
+    }
+
+    if (data.startsWith("customer_confirm_")) {
+      await ctx.answerCbQuery();
+      const customerId = data.replace("customer_confirm_", "");
+      const customers = await getCustomers({ limit: 100 });
+      const customer = customers.find((c) => c.id === customerId);
+
+      if (!customer) {
+        await ctx.answerCbQuery("❌ Customer not found");
+        return;
+      }
+
+      ctx.session.invoiceFlow.customer = customer;
+      ctx.session.invoiceFlow.step = 5; // Move to currency selection
+      console.log("Customer selected and stored:", customer);
+      await ctx.answerCbQuery("✅ Customer selected");
+
+      // Show currency selection
+      const currencyButtons = [
+        [
+          { text: "USDC", callback_data: "currency_usdc" },
+          { text: "USDT", callback_data: "currency_usdt" },
+        ],
+        [
+          { text: "ETH", callback_data: "currency_eth" },
+          { text: "SOL", callback_data: "currency_sol" },
+        ],
+      ];
+
+      const message =
+        "✅ *Customer selected:*\n" +
+        `Name: ${customer.name.replace(/[_*[\]()~`>#+=|{}.!-]/g, "\\$&")}\n` +
+        `Email: ${customer.email.replace(
+          /[_*[\]()~`>#+=|{}.!-]/g,
+          "\\$&"
+        )}\n\n` +
+        "Now, please select the currency for this invoice:";
+
+      await ctx.reply(message, {
+        parse_mode: "MarkdownV2",
+        reply_markup: { inline_keyboard: currencyButtons },
+      });
+      return;
+    }
+
+    if (data === "customer_confirm_no") {
+      await ctx.answerCbQuery();
+      ctx.session.invoiceFlow.step = 2;
+      ctx.session.invoiceFlow.newCustomer = {};
+      await ctx.reply(
+        "Let's create a new customer instead\\.\n\n" +
+          "*Please enter the customer's name:*",
+        { parse_mode: "MarkdownV2" }
+      );
+      return;
+    }
+
+    // Handle customer creation confirmation
+    if (data === "customer_create_confirm") {
+      await ctx.answerCbQuery();
+      await ctx.reply("⏳ Creating customer...");
+
+      try {
+        // Use the CopperX SDK directly as requested
+        const response = await copperx.customerController_create({
+          name: ctx.session.invoiceFlow.newCustomer.name,
+          organizationName:
+            ctx.session.invoiceFlow.newCustomer.organizationName,
+          email: ctx.session.invoiceFlow.newCustomer.email,
+        });
+
+        // Store the customer with the ID from the response
+        ctx.session.invoiceFlow.customer = {
+          id: response.data.id,
+          name: response.data.name,
+          email: response.data.email,
+          organizationName: response.data.organizationName,
+        };
+        console.log(
+          "New customer created and stored:",
+          ctx.session.invoiceFlow.customer
+        );
+
+        ctx.session.invoiceFlow.step = 5; // Move to currency selection
+        delete ctx.session.invoiceFlow.newCustomer;
+
+        // Show currency selection
+        const currencyButtons = [
+          [
+            { text: "USDC", callback_data: "currency_usdc" },
+            { text: "USDT", callback_data: "currency_usdt" },
+          ],
+          [
+            { text: "ETH", callback_data: "currency_eth" },
+            { text: "SOL", callback_data: "currency_sol" },
+          ],
+        ];
+
+        const message =
+          "✅ *Customer created successfully\\!*\n\n" +
+          "Now, please select the currency for this invoice:";
+
+        await ctx.reply(message, {
+          parse_mode: "MarkdownV2",
+          reply_markup: { inline_keyboard: currencyButtons },
+        });
+      } catch (error) {
+        console.error("Error creating customer:", error);
+        await ctx.reply(
+          "❌ Failed to create customer\\. Please try again\\.\n\n" +
+            `Error: ${error.message.replace(/[_*[\]()~`>#+=|{}.!-]/g, "\\$&")}`,
+          { parse_mode: "MarkdownV2" }
+        );
+      }
+      return;
+    }
+
+    if (data.startsWith("currency_")) {
+      const currency = data.replace("currency_", "");
+      ctx.session.invoiceFlow.currency = currency;
+      ctx.session.invoiceFlow.step = 6; // Move to line items
+
+      const currencyDisplay = currency.toUpperCase();
+      await ctx.answerCbQuery(`Selected ${currencyDisplay}`);
+
+      const message =
+        `✅ *Currency selected:* ${currencyDisplay}\n\n` +
+        "Now, let's add items to your invoice\\. For each item, I'll ask for:\n" +
+        "• Item name\n" +
+        "• Amount\n" +
+        "• Quantity\n\n" +
+        "*What's the name of the first item?*";
+
+      await ctx.reply(message, { parse_mode: "MarkdownV2" });
+      return;
+    }
+
+    if (data === "invoice_add_item") {
+      ctx.session.invoiceFlow.step = 6;
+      ctx.session.invoiceFlow.currentItem = null;
+
+      await ctx.reply("*What's the name of the next item?*", {
+        parse_mode: "MarkdownV2",
+      });
       return;
     }
 
@@ -2036,12 +2366,259 @@ bot.on(["text", "mention", "text_mention"], async (ctx) => {
 
   const text = ctx.message.text?.trim();
 
-  // Handle invoice flow text inputs - only for steps that expect text input
-  if (ctx.session.invoiceFlow && ctx.session.invoiceFlow.step > 0) {
+  // Handle invoice flow text inputs
+  if (ctx.session.invoiceFlow?.step > 0) {
     const flow = ctx.session.invoiceFlow;
 
-    // Only handle text input for specific steps (2-4 for customer creation, 7 for line items)
-    // Other steps use buttons, so text input should be ignored and flow should be reset
+    // Customer name search
+    if (flow.step === 2 && flow.newCustomer === undefined) {
+      // Search for existing customer
+      const customers = await getCustomers({ limit: 100 });
+      const searchTerm = text.toLowerCase();
+      const matches = customers.filter(
+        (c) =>
+          c.name.toLowerCase().includes(searchTerm) ||
+          c.email.toLowerCase().includes(searchTerm)
+      );
+
+      if (matches.length === 0) {
+        await ctx.reply(
+          "❌ No customers found matching your search\\.\n\n" +
+            "Would you like to try another search or create a new customer?",
+          {
+            parse_mode: "MarkdownV2",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: "🔍 Search Again", callback_data: "customer_select" },
+                  { text: "➕ Create New", callback_data: "customer_create" },
+                ],
+              ],
+            },
+          }
+        );
+        return;
+      }
+
+      if (matches.length === 1) {
+        const customer = matches[0];
+        await ctx.reply(
+          "*Found one matching customer:*\n\n" +
+            `Name: ${customer.name.replace(
+              /[_*[\]()~`>#+=|{}.!-]/g,
+              "\\$&"
+            )}\n` +
+            `Email: ${customer.email.replace(
+              /[_*[\]()~`>#+=|{}.!-]/g,
+              "\\$&"
+            )}\n\n` +
+            "Is this the correct customer?",
+          {
+            parse_mode: "MarkdownV2",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: "✅ Yes",
+                    callback_data: `customer_confirm_${customer.id}`,
+                  },
+                  { text: "❌ No", callback_data: "customer_confirm_no" },
+                ],
+              ],
+            },
+          }
+        );
+        return;
+      }
+
+      // Multiple matches - show as buttons
+      const buttons = matches.map((c) => [
+        {
+          text: `${c.name} (${c.email})`,
+          callback_data: `customer_confirm_${c.id}`,
+        },
+      ]);
+
+      await ctx.reply(
+        `Found ${matches.length} matching customers\\. Please select one:`,
+        {
+          parse_mode: "MarkdownV2",
+          reply_markup: { inline_keyboard: buttons },
+        }
+      );
+      return;
+    }
+
+    // New customer flow - name input (step 2)
+    if (flow.step === 2 && flow.newCustomer !== undefined) {
+      flow.newCustomer.name = text;
+      flow.step = 3;
+      await ctx.reply("*Please enter the organization name:*", {
+        parse_mode: "MarkdownV2",
+      });
+      return;
+    }
+
+    // New customer flow - organization input (step 3)
+    if (flow.step === 3) {
+      flow.newCustomer.organizationName = text;
+      flow.step = 4;
+      await ctx.reply("*Please enter the customer's email address:*", {
+        parse_mode: "MarkdownV2",
+      });
+      return;
+    }
+
+    // New customer flow - email input (step 4)
+    if (flow.step === 4) {
+      if (!text.includes("@")) {
+        await ctx.reply("❌ Please enter a valid email address\\.");
+        return;
+      }
+
+      flow.newCustomer.email = text;
+      flow.step = 5;
+
+      // Show confirmation
+      const message =
+        "*Please confirm the customer details:*\n\n" +
+        `Name: ${flow.newCustomer.name.replace(
+          /[_*[\]()~`>#+=|{}.!-]/g,
+          "\\$&"
+        )}\n` +
+        `Organization: ${flow.newCustomer.organizationName.replace(
+          /[_*[\]()~`>#+=|{}.!-]/g,
+          "\\$&"
+        )}\n` +
+        `Email: ${flow.newCustomer.email.replace(
+          /[_*[\]()~`>#+=|{}.!-]/g,
+          "\\$&"
+        )}`;
+
+      await ctx.reply(message, {
+        parse_mode: "MarkdownV2",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "✅ Confirm",
+                callback_data: "customer_create_confirm",
+              },
+              { text: "🔄 Redo", callback_data: "customer_create" },
+            ],
+          ],
+        },
+      });
+      return;
+    }
+
+    // Item name input (step 6)
+    if (flow.step === 6) {
+      flow.currentItem = {
+        name: text,
+        amount: 0,
+        quantity: 1,
+      };
+      flow.step = 7;
+
+      // Escape all special characters for MarkdownV2
+      const escapedName = text.replace(/[_*[\]()~`>#+=|{}.!-]/g, "\\$&");
+      const currencyDisplay = flow.currency.toUpperCase();
+
+      const message =
+        `*Item Name:* ${escapedName}\n\n` +
+        `Now, *what's the amount in ${currencyDisplay}?*\n` +
+        `Example: 100\\.50 for 100\\.50 ${currencyDisplay}`;
+
+      await ctx.reply(message, { parse_mode: "MarkdownV2" });
+      return;
+    }
+
+    // Currency selection (step 2) is handled by callback
+    // Amount input
+    if (flow.step === 7) {
+      const inputAmount = parseFloat(text);
+      if (isNaN(inputAmount) || inputAmount <= 0) {
+        await ctx.reply("❌ Please enter a valid amount (e.g., 100.50)");
+        return;
+      }
+
+      flow.currentItem.amount = toUSDC(inputAmount);
+      flow.step = 8;
+
+      // Escape all special characters for MarkdownV2
+      const escapedName = flow.currentItem.name.replace(
+        /[_*[\]()~`>#+=|{}.!-]/g,
+        "\\$&"
+      );
+      const amountFormatted = formatUSDC(flow.currentItem.amount).replace(
+        /\./g,
+        "\\."
+      );
+      const currencyDisplay = flow.currency.toUpperCase();
+      const message =
+        `*Item Name:* ${escapedName}\n` +
+        `*Amount:* ${amountFormatted} ${currencyDisplay}\n\n` +
+        "*What's the quantity?* \\(default: 1\\)";
+
+      await ctx.reply(message, { parse_mode: "MarkdownV2" });
+      return;
+    }
+
+    // Quantity input
+    if (flow.step === 8) {
+      const quantity = parseInt(text);
+      if (isNaN(quantity) || quantity <= 0) {
+        await ctx.reply("❌ Please enter a valid quantity (e.g., 1)");
+        return;
+      }
+
+      flow.currentItem.quantity = quantity;
+      flow.lineItems.push(flow.currentItem);
+
+      // Show summary and ask if they want to add more
+      const buttons = [
+        [{ text: "➕ Add Another Item", callback_data: "invoice_add_item" }],
+        [{ text: "✅ Create Invoice", callback_data: "invoice_create" }],
+        [{ text: "❌ Cancel", callback_data: "invoice_cancel" }],
+      ];
+
+      let summary = "*Invoice Summary:*\n\n";
+      let total = 0;
+
+      flow.lineItems.forEach((item, index) => {
+        const itemTotal = (item.amount * item.quantity) / 100000000;
+        total += itemTotal;
+        const escapedName = item.name.replace(/[_*[\]()~`>#+=|{}.!-]/g, "\\$&");
+        const amountFormatted = formatUSDC(item.amount).replace(/\./g, "\\.");
+        const itemTotalFormatted = itemTotal.toFixed(2).replace(/\./g, "\\.");
+
+        summary +=
+          `${index + 1}\\. ${escapedName}\n` +
+          `   ${amountFormatted} ${flow.currency.toUpperCase()} × ${
+            item.quantity
+          } \\= ${itemTotalFormatted} ${flow.currency.toUpperCase()}\n\n`;
+      });
+
+      const totalFormatted = total.toFixed(2).replace(/\./g, "\\.");
+      // Add total (single currency now)
+      summary += `\n*Total: ${totalFormatted} ${flow.currency.toUpperCase()}*`;
+
+      await ctx.reply(summary, {
+        parse_mode: "MarkdownV2",
+        reply_markup: { inline_keyboard: buttons },
+      });
+
+      flow.step = 9;
+      return;
+    }
+
+    return;
+  }
+
+  // Handle legacy invoice flow steps
+  if (ctx.session.invoiceFlow?.step > 0) {
+    const flow = ctx.session.invoiceFlow;
     const textInputSteps = [2, 3, 4, 7];
 
     if (textInputSteps.includes(flow.step)) {
@@ -2056,7 +2633,10 @@ bot.on(["text", "mention", "text_mention"], async (ctx) => {
 
       if (flow.step === 3) {
         // Collecting email
-        // Validate email format
+        if (!text.includes("@")) {
+          await ctx.reply("❌ Please enter a valid email address.");
+          return;
+        }
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(text)) {
           await ctx.reply(
@@ -2096,45 +2676,15 @@ bot.on(["text", "mention", "text_mention"], async (ctx) => {
         return;
       }
 
-      // Line item collection
+      // Legacy line item collection - no longer used
       if (flow.step === 7) {
-        // Parse line item: "Item Name | Price"
-        const parts = text.split("|").map((p) => p.trim());
-
-        if (parts.length !== 2) {
-          await ctx.reply(
-            "❌ Invalid format. Please use: `Item Name | Price`",
-            {
-              parse_mode: "Markdown",
-            }
-          );
-          return;
-        }
-
-        const [name, priceStr] = parts;
-        const price = parseFloat(priceStr);
-
-        if (isNaN(price) || price <= 0) {
-          await ctx.reply(
-            "❌ Invalid price. Please enter a valid positive number."
-          );
-          return;
-        }
-
-        flow.data.lineItems.push({ name, price: price.toString() });
-
-        await ctx.reply(`✅ Item added: ${name} - $${price}`);
-        await confirmLineItems(ctx);
+        await ctx.reply(
+          "❌ This invoice format is no longer supported. Please use /create_invoice to start a new invoice.",
+          { parse_mode: "Markdown" }
+        );
+        delete ctx.session.invoiceFlow;
         return;
       }
-    } else {
-      // User is in invoice flow but at a button-selection step
-      // Reset invoice flow and allow normal task processing
-      console.log(
-        `User sent text at invoice step ${flow.step}, resetting invoice flow`
-      );
-      resetInvoiceFlow(ctx);
-      // Continue to task processing below
     }
   }
 

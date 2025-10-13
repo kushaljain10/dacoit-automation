@@ -1,7 +1,7 @@
-const { App } = require("@slack/bolt");
-const { processTaskWithAI } = require("./ai");
-const { AirtableAuthStore } = require("./airtable-store");
-const { bc } = require("./basecamp");
+import { App } from "@slack/bolt";
+import { processTaskWithAI } from "./ai.js";
+import { AirtableAuthStore } from "./airtable-store.js";
+import { bc } from "./basecamp.js";
 
 // Initialize Slack app with your credentials
 const slackApp = new App({
@@ -237,4 +237,4 @@ slackApp.command("/task-help", async ({ ack, body, client }) => {
   });
 });
 
-module.exports = { slackApp };
+export { slackApp };
