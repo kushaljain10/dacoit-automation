@@ -1945,101 +1945,44 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
     }
 
     if (data === "invoice_create") {
-      // Create the invoice
-      await ctx.reply("⏳ Creating invoice...");
-
-      try {
-        const invoiceData = {
-          lineItems: {
-            data: ctx.session.invoiceFlow.lineItems.map((item) => ({
-              priceData: {
-                currency: ctx.session.invoiceFlow.currency,
-                productData: {
-                  name: item.name,
-                },
-                unitAmount: item.amount, // Already in correct format with 8 decimals
-              },
-              quantity: item.quantity,
-            })),
+      // Ask if the user wants to add a footer before due date and creation
+      ctx.session.invoiceFlow.step = 10; // Footer yes/no
+      await ctx.reply(
+        "🧾 *Add a footer to the invoice?*",
+        {
+          parse_mode: "MarkdownV2",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: "Yes", callback_data: "invoice_footer_yes" },
+                { text: "No", callback_data: "invoice_footer_no" },
+              ],
+            ],
           },
-          paymentSetting: {
-            allowSwap: false,
-          },
-          customerId: ctx.session.invoiceFlow.customer.id,
-        };
+        }
+      );
+      return;
+    }
 
-        console.log("Creating invoice with data:", invoiceData);
-        console.log("Customer being used:", ctx.session.invoiceFlow.customer);
-        console.log(
-          "Customer ID being used:",
-          ctx.session.invoiceFlow.customer?.id
-        );
-        console.log(
-          "Full session invoiceFlow:",
-          JSON.stringify(ctx.session.invoiceFlow, null, 2)
-        );
-        const { data: invoice } = await invoiceController_create(invoiceData);
-        console.log("Invoice created:", invoice);
+    // Footer selection callbacks
+    if (data === "invoice_footer_yes") {
+      ctx.session.invoiceFlow.step = 11; // Capture footer text next
+      await ctx.reply("✍️ *Please enter the footer text for the invoice:*", {
+        parse_mode: "MarkdownV2",
+      });
+      return;
+    }
 
-        // Calculate total
-        const total = ctx.session.invoiceFlow.lineItems.reduce(
-          (sum, item) => sum + (item.amount * item.quantity) / 100000000,
-          0
-        );
-
-        // Calculate totals from the invoice response
-        const totalAmount = (parseInt(invoice.total) / 100000000).toFixed(2);
-        const currency = invoice.currency.toUpperCase();
-
-        await ctx.reply(
-          `✅ *Invoice created successfully\\!*\n\n` +
-            `Invoice ID: \`${invoice.id}\`\n` +
-            `Total: ${totalAmount.replace(/\./g, "\\.")} ${currency}\n\n` +
-            `${
-              invoice.hostedUrl
-                ? `🔗 [View Invoice](${invoice.hostedUrl.replace(
-                    /[_*[\]()~`>#+=|{}.!-]/g,
-                    "\\$&"
-                  )})`
-                : ""
-            }`,
-          {
-            parse_mode: "MarkdownV2",
-            disable_web_page_preview: true,
-          }
-        );
-
-        // Ask if user wants to finalize the invoice
-        const finalizeButtons = [
-          [
-            {
-              text: "✅ Yes, Finalize Invoice",
-              callback_data: `finalize_${invoice.id}`,
-            },
-            { text: "❌ No, Keep as Draft", callback_data: "finalize_no" },
-          ],
-        ];
-
-        await ctx.reply(
-          "📋 *Invoice Finalization*\n\n" +
-            "Would you like to finalize this invoice? Finalizing will make it ready for payment\\.\n\n" +
-            "• *Yes*: Finalize the invoice now\n" +
-            "• *No*: Keep it as a draft",
-          {
-            parse_mode: "MarkdownV2",
-            reply_markup: { inline_keyboard: finalizeButtons },
-          }
-        );
-
-        // Store invoice ID for finalization
-        ctx.session.invoiceFlow.finalizeInvoiceId = invoice.id;
-      } catch (error) {
-        console.error("Error creating invoice:", error);
-        await ctx.reply(
-          "❌ Failed to create invoice. Please try again or contact support.\n\n" +
-            `Error: ${error.response?.data?.message || error.message}`
-        );
-      }
+    if (data === "invoice_footer_no") {
+      // Skip footer, ask for due date
+      delete ctx.session.invoiceFlow.footer;
+      ctx.session.invoiceFlow.step = 12; // Due date input
+      await ctx.reply(
+        "📅 <b>What is the due date of the invoice?</b>\n\n" +
+          "You can reply with: <code>today</code>, <code>tomorrow</code>, a specific date like <code>2025-10-10</code>, or <code>in 3 days</code>.\n" +
+          "Type <code>skip</code> to leave the due date empty.",
+        { parse_mode: "HTML" }
+      );
       return;
     }
 
@@ -2048,8 +1991,8 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
       ctx.session.invoiceFlow.step = 2;
       await ctx.answerCbQuery();
       await ctx.reply(
-        "Please enter the customer's name to search\\. I'll look for matching customers\\.",
-        { parse_mode: "MarkdownV2" }
+        "Please enter the customer or organisation's name to search. I'll look for matching customers.",
+        { parse_mode: "HTML" }
       );
       return;
     }
@@ -2062,7 +2005,7 @@ bot.on("callback_query", requireAuth, async (ctx, next) => {
         "Let's create a new customer\\.\n\n" +
           "I'll ask for the customer's details step by step:\n\n" +
           "*Please enter the customer's name:*",
-        { parse_mode: "MarkdownV2" }
+        { parse_mode: "HTML" }
       );
       return;
     }
@@ -2454,11 +2397,16 @@ bot.on(["text", "mention", "text_mention"], async (ctx) => {
       // Search for existing customer
       const customers = await getCustomers({ limit: 100 });
       const searchTerm = text.toLowerCase();
-      const matches = customers.filter(
-        (c) =>
-          c.name.toLowerCase().includes(searchTerm) ||
-          c.email.toLowerCase().includes(searchTerm)
-      );
+      const matches = customers.filter((c) => {
+        const name = (c.name || "").toLowerCase();
+        const email = (c.email || "").toLowerCase();
+        const organization = (c.organizationName || "").toLowerCase();
+        return (
+          name.includes(searchTerm) ||
+          email.includes(searchTerm) ||
+          organization.includes(searchTerm)
+        );
+      });
 
       if (matches.length === 0) {
         await ctx.reply(
@@ -2487,6 +2435,12 @@ bot.on(["text", "mention", "text_mention"], async (ctx) => {
               /[_*[\]()~`>#+=|{}.!-]/g,
               "\\$&"
             )}\n` +
+            (customer.organizationName
+              ? `Organization: ${customer.organizationName.replace(
+                  /[_*[\]()~`>#+=|{}.!-]/g,
+                  "\\$&"
+                )}\n`
+              : "") +
             `Email: ${customer.email.replace(
               /[_*[\]()~`>#+=|{}.!-]/g,
               "\\$&"
@@ -2689,6 +2643,131 @@ bot.on(["text", "mention", "text_mention"], async (ctx) => {
       });
 
       flow.step = 9;
+      return;
+    }
+
+    // Footer text input (step 11)
+    if (flow.step === 11) {
+      // Store footer and proceed to due date
+      flow.footer = text;
+      flow.step = 12;
+
+      await ctx.reply(
+        "📅 <b>What is the due date of the invoice?</b>\n\n" +
+          "You can reply with: <code>today</code>, <code>tomorrow</code>, a specific date like <code>2025-10-10</code>, or <code>in 3 days</code>.\n" +
+        "Type <code>skip</code> to leave the due date empty.",
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    // Due date input (step 12)
+    if (flow.step === 12) {
+      const raw = text.trim();
+      const lower = raw.toLowerCase();
+
+      // Allow skipping due date
+      if (lower === "skip") {
+        delete flow.dueDate; // no due date
+      } else {
+        const dueDayStr = parseDue(raw); // returns YYYY-MM-DD or null
+        if (!dueDayStr) {
+          await ctx.reply(
+            "❌ Invalid date format. Try `today`, `tomorrow`, `YYYY-MM-DD`, or `in 3 days`.\nType `skip` to leave it empty."
+          );
+          return;
+        }
+        // Convert to ISO datetime (UTC) as requested
+        flow.dueDate = dayjs(dueDayStr).startOf("day").toISOString();
+      }
+
+      // Create the invoice now that we have footer and (optional) due date
+      await ctx.reply("⏳ Creating invoice...");
+
+      try {
+        const customerId = flow.customer?.id || flow.data?.customerId;
+        if (!customerId) {
+          console.warn("Missing customerId in invoiceFlow; flow:", JSON.stringify(flow, null, 2));
+          await ctx.reply("❌ Missing customer information. Please select a customer again.");
+          ctx.session.invoiceFlow.step = 5; // back to currency/customer stage
+          return;
+        }
+        const invoiceData = {
+          lineItems: {
+            data: flow.lineItems.map((item) => ({
+              priceData: {
+                currency: flow.currency,
+                productData: { name: item.name },
+                unitAmount: item.amount,
+              },
+              quantity: item.quantity,
+            })),
+          },
+          paymentSetting: { allowSwap: false },
+          customerId,
+        };
+
+        // Conditionally add footer and dueDate
+        if (flow.footer && String(flow.footer).trim().length > 0) {
+          invoiceData.footer = flow.footer;
+        }
+        if (flow.dueDate) {
+          invoiceData.dueDate = flow.dueDate;
+        }
+
+        console.log("Creating invoice with data:", invoiceData);
+        console.log("Customer being used:", flow.customer);
+        console.log("Full session invoiceFlow:", JSON.stringify(flow, null, 2));
+
+        const { data: invoice } = await invoiceController_create(invoiceData);
+        console.log("Invoice created:", invoice);
+
+        const totalAmount = (parseInt(invoice.total) / 100000000).toFixed(2);
+        const currency = invoice.currency.toUpperCase();
+
+        await ctx.reply(
+          `✅ *Invoice created successfully\\!*\n\n` +
+            `Invoice ID: \`${invoice.id}\`\n` +
+            `Total: ${totalAmount.replace(/\./g, "\\.")} ${currency}\n\n` +
+            `${
+              invoice.hostedUrl
+                ? `🔗 [View Invoice](${invoice.hostedUrl.replace(
+                    /[_*[\]()~`>#+=|{}.!-]/g,
+                    "\\$&"
+                  )})`
+                : ""
+            }`,
+          { parse_mode: "MarkdownV2", disable_web_page_preview: true }
+        );
+
+        // Ask if user wants to finalize the invoice
+        const finalizeButtons = [
+          [
+            { text: "✅ Yes, Finalize Invoice", callback_data: `finalize_${invoice.id}` },
+            { text: "❌ No, Keep as Draft", callback_data: "finalize_no" },
+          ],
+        ];
+
+        await ctx.reply(
+          "📋 *Invoice Finalization*\n\n" +
+            "Would you like to finalize this invoice? Finalizing will make it ready for payment\\.\n\n" +
+            "• *Yes*: Finalize the invoice now\n" +
+            "• *No*: Keep it as a draft",
+          { parse_mode: "MarkdownV2", reply_markup: { inline_keyboard: finalizeButtons } }
+        );
+
+        // Store invoice ID for finalization
+        flow.finalizeInvoiceId = invoice.id;
+
+        // Move step forward to avoid re-processing
+        flow.step = 13;
+      } catch (error) {
+        console.error("Error creating invoice:", error);
+        await ctx.reply(
+          "❌ Failed to create invoice. Please try again or contact support.\n\n" +
+            `Error: ${error.response?.data?.message || error.message}`
+        );
+      }
       return;
     }
 
