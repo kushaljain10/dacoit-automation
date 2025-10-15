@@ -4887,14 +4887,12 @@ app.listen(PORT, async () => {
 // Set up bot commands menu (works for both polling and webhook modes)
 const setupBotCommands = async () => {
   try {
-    const commands = [
-      { command: "start", description: "Begin creating a new task" },
-      { command: "stop", description: "Cancel current conversation and reset" },
-      { command: "help", description: "Show available commands" },
-    ];
-
+    // Use the global commands list defined near bot initialization
     await bot.telegram.setMyCommands(commands);
-    console.log("✅ Bot commands menu set up successfully");
+    console.log(
+      "✅ Bot commands menu set up successfully:",
+      commands.map((c) => c.command).join(", ")
+    );
   } catch (error) {
     console.error("❌ Failed to set up bot commands menu:", error.message);
   }
